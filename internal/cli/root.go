@@ -48,6 +48,9 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewLintCommand(runtime))
 	cmd.AddCommand(command.NewSchemaCommand(runtime))
 	cmd.AddCommand(command.NewChangelogCommand(runtime))
+	cmd.AddCommand(command.NewIGCommand(runtime))
+	cmd.AddCommand(command.NewOpsCommand(runtime))
+	cmd.AddCommand(command.NewEnterpriseCommand(runtime))
 
 	return cmd
 }

@@ -15,9 +15,11 @@ import (
 const SchemaVersion = 1
 
 type Config struct {
-	SchemaVersion int            `yaml:"schema_version"`
-	DefaultOrg    string         `yaml:"default_org,omitempty"`
-	Orgs          map[string]Org `yaml:"orgs"`
+	SchemaVersion int             `yaml:"schema_version"`
+	DefaultOrg    string          `yaml:"default_org,omitempty"`
+	Orgs          map[string]Org  `yaml:"orgs"`
+	Roles         map[string]Role `yaml:"roles,omitempty"`
+	Bindings      []Binding       `yaml:"bindings,omitempty"`
 }
 
 type Org struct {
@@ -88,6 +90,12 @@ func (c *Config) Validate() error {
 		if _, ok := c.Orgs[defaultOrg]; !ok {
 			return fmt.Errorf("default_org %q does not exist", defaultOrg)
 		}
+	}
+	if err := validateRoles(c.Roles); err != nil {
+		return err
+	}
+	if err := validateBindings(c.Orgs, c.Roles, c.Bindings); err != nil {
+		return err
 	}
 	return nil
 }

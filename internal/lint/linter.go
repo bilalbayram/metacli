@@ -115,6 +115,12 @@ func (l *Linter) Lint(spec *RequestSpec, strict bool) Result {
 	return result
 }
 
+func ResolveRequestTarget(path string, method string) (string, string) {
+	endpoint := detectEndpoint(path, method)
+	entity := detectEntity(path, endpoint)
+	return endpoint, entity
+}
+
 func detectEndpoint(path string, method string) string {
 	base := detectBaseEndpoint(path)
 	if base == "generic" {

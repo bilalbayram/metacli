@@ -25,8 +25,8 @@ func TestRunReturnsReportWithChangelogOCCCheck(t *testing.T) {
 	if result.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", result.Report.Kind)
 	}
-	if len(result.Report.Checks) != 3 {
-		t.Fatalf("expected three checks, got %d", len(result.Report.Checks))
+	if len(result.Report.Checks) != 4 {
+		t.Fatalf("expected four checks, got %d", len(result.Report.Checks))
 	}
 	if result.Report.Checks[0].Name != checkNameChangelogOCCDelta {
 		t.Fatalf("unexpected first check name: %s", result.Report.Checks[0].Name)
@@ -37,6 +37,9 @@ func TestRunReturnsReportWithChangelogOCCCheck(t *testing.T) {
 	if result.Report.Checks[2].Name != checkNameRateLimitThreshold {
 		t.Fatalf("unexpected third check name: %s", result.Report.Checks[2].Name)
 	}
+	if result.Report.Checks[3].Name != checkNamePermissionPolicyPreflight {
+		t.Fatalf("unexpected fourth check name: %s", result.Report.Checks[3].Name)
+	}
 	for _, check := range result.Report.Checks {
 		if check.Status != CheckStatusPass {
 			t.Fatalf("unexpected check status: %s", check.Status)
@@ -45,7 +48,7 @@ func TestRunReturnsReportWithChangelogOCCCheck(t *testing.T) {
 			t.Fatal("expected non-blocking status for unchanged snapshots")
 		}
 	}
-	if result.Report.Summary.Total != 3 || result.Report.Summary.Passed != 3 || result.Report.Summary.Failed != 0 || result.Report.Summary.Blocking != 0 {
+	if result.Report.Summary.Total != 4 || result.Report.Summary.Passed != 4 || result.Report.Summary.Failed != 0 || result.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary counts: %+v", result.Report.Summary)
 	}
 }

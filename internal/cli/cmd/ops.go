@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/bilalbayram/metacli/internal/config"
 	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/spf13/cobra"
 )
@@ -60,6 +61,7 @@ func newOpsInitCommand(runtime Runtime) *cobra.Command {
 func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	var statePath string
 	var rateTelemetryPath string
+	var preflightConfigPath string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -82,6 +84,8 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 				}
 				runOptions.RateLimitTelemetry = &snapshot
 			}
+			preflightSnapshot := buildPermissionPreflightSnapshot(runtime.ProfileName(), preflightConfigPath)
+			runOptions.PermissionPreflight = &preflightSnapshot
 
 			result, err := ops.RunWithOptions(resolvedPath, runOptions)
 			if err != nil {
@@ -108,6 +112,7 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&statePath, "state-path", "", "Path to baseline state JSON file")
 	cmd.Flags().StringVar(&rateTelemetryPath, "rate-telemetry-file", "", "Path to rate-limit telemetry JSON snapshot file")
+	cmd.Flags().StringVar(&preflightConfigPath, "preflight-config-path", "", "Path to auth config file used for permission preflight")
 	return cmd
 }
 
@@ -170,4 +175,57 @@ func loadRateLimitTelemetrySnapshot(path string) (ops.RateLimitTelemetrySnapshot
 		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: %w", path, err)
 	}
 	return snapshot, nil
+}
+
+func buildPermissionPreflightSnapshot(profileName string, configPath string) ops.PermissionPreflightSnapshot {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return ops.PermissionPreflightSnapshot{
+			Enabled: false,
+		}
+	}
+
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		defaultPath, err := config.DefaultPath()
+		if err != nil {
+			return ops.PermissionPreflightSnapshot{
+				Enabled:     true,
+				ProfileName: profileName,
+				LoadError:   err.Error(),
+			}
+		}
+		configPath = defaultPath
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return ops.PermissionPreflightSnapshot{
+			Enabled:     true,
+			ProfileName: profileName,
+			LoadError:   err.Error(),
+		}
+	}
+	_, profile, err := cfg.ResolveProfile(profileName)
+	if err != nil {
+		return ops.PermissionPreflightSnapshot{
+			Enabled:     true,
+			ProfileName: profileName,
+			LoadError:   err.Error(),
+		}
+	}
+
+	return ops.PermissionPreflightSnapshot{
+		Enabled:       true,
+		ProfileName:   profileName,
+		Domain:        profile.Domain,
+		GraphVersion:  profile.GraphVersion,
+		TokenType:     profile.TokenType,
+		BusinessID:    profile.BusinessID,
+		AppID:         profile.AppID,
+		PageID:        profile.PageID,
+		SourceProfile: profile.SourceProfile,
+		TokenRef:      profile.TokenRef,
+		AppSecretRef:  profile.AppSecretRef,
+	}
 }

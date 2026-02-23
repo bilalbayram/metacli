@@ -12,15 +12,17 @@ const (
 )
 
 const (
-	checkNameChangelogOCCDelta  = "changelog_occ_delta"
-	checkNameSchemaPackDrift    = "schema_pack_drift"
-	checkNameRateLimitThreshold = "rate_limit_threshold"
+	checkNameChangelogOCCDelta         = "changelog_occ_delta"
+	checkNameSchemaPackDrift           = "schema_pack_drift"
+	checkNameRateLimitThreshold        = "rate_limit_threshold"
+	checkNamePermissionPolicyPreflight = "permission_policy_preflight"
 )
 
 const DefaultRateLimitThreshold = 75
 
 type RunOptions struct {
-	RateLimitTelemetry *RateLimitTelemetrySnapshot
+	RateLimitTelemetry  *RateLimitTelemetrySnapshot
+	PermissionPreflight *PermissionPreflightSnapshot
 }
 
 func Initialize(statePath string) (InitResult, error) {
@@ -77,6 +79,12 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		rateTelemetry = *options.RateLimitTelemetry
 	}
 	report.Checks = append(report.Checks, evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitThreshold))
+
+	preflightSnapshot := PermissionPreflightSnapshot{}
+	if options.PermissionPreflight != nil {
+		preflightSnapshot = *options.PermissionPreflight
+	}
+	report.Checks = append(report.Checks, evaluatePermissionPolicyPreflight(preflightSnapshot))
 	report.Summary = summarizeChecks(report.Checks)
 
 	return RunResult{

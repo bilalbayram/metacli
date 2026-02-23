@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/ops"
@@ -55,6 +59,7 @@ func newOpsInitCommand(runtime Runtime) *cobra.Command {
 
 func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	var statePath string
+	var rateTelemetryPath string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -69,7 +74,16 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 				return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeState, err))
 			}
 
-			result, err := ops.Run(resolvedPath)
+			runOptions := ops.RunOptions{}
+			if strings.TrimSpace(rateTelemetryPath) != "" {
+				snapshot, err := loadRateLimitTelemetrySnapshot(rateTelemetryPath)
+				if err != nil {
+					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+				}
+				runOptions.RateLimitTelemetry = &snapshot
+			}
+
+			result, err := ops.RunWithOptions(resolvedPath, runOptions)
 			if err != nil {
 				return writeOpsError(cmd, ops.CommandRun, err)
 			}
@@ -93,6 +107,7 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&statePath, "state-path", "", "Path to baseline state JSON file")
+	cmd.Flags().StringVar(&rateTelemetryPath, "rate-telemetry-file", "", "Path to rate-limit telemetry JSON snapshot file")
 	return cmd
 }
 
@@ -128,4 +143,31 @@ func writeOpsError(cmd *cobra.Command, command string, err error) error {
 		return err
 	}
 	return ops.WrapExit(code, err)
+}
+
+func loadRateLimitTelemetrySnapshot(path string) (ops.RateLimitTelemetrySnapshot, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ops.RateLimitTelemetrySnapshot{}, errors.New("rate telemetry file path is required")
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("read rate telemetry file %s: %w", path, err)
+	}
+
+	var snapshot ops.RateLimitTelemetrySnapshot
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
+		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: %w", path, err)
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: multiple JSON values", path)
+		}
+		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: %w", path, err)
+	}
+	return snapshot, nil
 }

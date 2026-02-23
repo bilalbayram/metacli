@@ -20,7 +20,7 @@ import (
 
 const (
 	StateSchemaVersion = 1
-	BaselineVersion    = 3
+	BaselineVersion    = 4
 )
 
 const baselineStatusInitialized = "initialized"
@@ -39,8 +39,9 @@ type BaselineState struct {
 }
 
 type Snapshots struct {
-	ChangelogOCC ChangelogOCCSnapshot `json:"changelog_occ"`
-	SchemaPack   SchemaPackSnapshot   `json:"schema_pack"`
+	ChangelogOCC ChangelogOCCSnapshot       `json:"changelog_occ"`
+	SchemaPack   SchemaPackSnapshot         `json:"schema_pack"`
+	RateLimit    RateLimitTelemetrySnapshot `json:"rate_limit"`
 }
 
 type ChangelogOCCSnapshot struct {
@@ -54,12 +55,26 @@ type SchemaPackSnapshot struct {
 	SHA256  string `json:"sha256"`
 }
 
+type RateLimitTelemetrySnapshot struct {
+	AppCallCount     int `json:"app_call_count"`
+	AppTotalCPUTime  int `json:"app_total_cputime"`
+	AppTotalTime     int `json:"app_total_time"`
+	PageCallCount    int `json:"page_call_count"`
+	PageTotalCPUTime int `json:"page_total_cputime"`
+	PageTotalTime    int `json:"page_total_time"`
+	AdAccountUtilPct int `json:"ad_account_util_pct"`
+}
+
 func NewBaselineState() (BaselineState, error) {
 	changelogSnapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
 	if err != nil {
 		return BaselineState{}, err
 	}
 	schemaPackSnapshot, err := captureSchemaPackSnapshot()
+	if err != nil {
+		return BaselineState{}, err
+	}
+	rateLimitSnapshot, err := captureRateLimitTelemetrySnapshot()
 	if err != nil {
 		return BaselineState{}, err
 	}
@@ -70,6 +85,7 @@ func NewBaselineState() (BaselineState, error) {
 		Snapshots: Snapshots{
 			ChangelogOCC: changelogSnapshot,
 			SchemaPack:   schemaPackSnapshot,
+			RateLimit:    rateLimitSnapshot,
 		},
 	}, nil
 }
@@ -202,6 +218,9 @@ func (s Snapshots) Validate() error {
 	if err := s.SchemaPack.Validate(); err != nil {
 		return err
 	}
+	if err := s.RateLimit.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -224,6 +243,31 @@ func (s SchemaPackSnapshot) Validate() error {
 	}
 	if strings.TrimSpace(s.SHA256) == "" {
 		return errors.New("baseline schema_pack.sha256 is required")
+	}
+	return nil
+}
+
+func (s RateLimitTelemetrySnapshot) Validate() error {
+	if err := validateUsagePercent("baseline rate_limit.app_call_count", s.AppCallCount); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.app_total_cputime", s.AppTotalCPUTime); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.app_total_time", s.AppTotalTime); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.page_call_count", s.PageCallCount); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.page_total_cputime", s.PageTotalCPUTime); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.page_total_time", s.PageTotalTime); err != nil {
+		return err
+	}
+	if err := validateUsagePercent("baseline rate_limit.ad_account_util_pct", s.AdAccountUtilPct); err != nil {
+		return err
 	}
 	return nil
 }
@@ -257,6 +301,22 @@ func captureSchemaPackSnapshot() (SchemaPackSnapshot, error) {
 	}, nil
 }
 
+func captureRateLimitTelemetrySnapshot() (RateLimitTelemetrySnapshot, error) {
+	snapshot := RateLimitTelemetrySnapshot{
+		AppCallCount:     0,
+		AppTotalCPUTime:  0,
+		AppTotalTime:     0,
+		PageCallCount:    0,
+		PageTotalCPUTime: 0,
+		PageTotalTime:    0,
+		AdAccountUtilPct: 0,
+	}
+	if err := snapshot.Validate(); err != nil {
+		return RateLimitTelemetrySnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func resolveSchemaPackSnapshotSource(domain string, version string) (string, error) {
 	relative := filepath.Join(schema.DefaultSchemaDir, domain, version+".json")
 	wd, err := os.Getwd()
@@ -278,6 +338,13 @@ func resolveSchemaPackSnapshotSource(domain string, version string) (string, err
 		current = parent
 	}
 	return "", fmt.Errorf("schema pack snapshot source not found for %s/%s at %s", domain, version, relative)
+}
+
+func validateUsagePercent(name string, value int) error {
+	if value < 0 || value > 100 {
+		return fmt.Errorf("%s must be between 0 and 100 (got %d)", name, value)
+	}
+	return nil
 }
 
 func marshalState(state BaselineState) ([]byte, error) {

@@ -75,7 +75,7 @@ func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 3,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"432a308e09cb9e1c40c03e992a0f28d70600954f2cb1c939959512a1660a6774\"\n    }\n  }\n}\n"
+	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 4,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"432a308e09cb9e1c40c03e992a0f28d70600954f2cb1c939959512a1660a6774\"\n    },\n    \"rate_limit\": {\n      \"app_call_count\": 0,\n      \"app_total_cputime\": 0,\n      \"app_total_time\": 0,\n      \"page_call_count\": 0,\n      \"page_total_cputime\": 0,\n      \"page_total_time\": 0,\n      \"ad_account_util_pct\": 0\n    }\n  }\n}\n"
 	if string(rawState) != expectedState {
 		t.Fatalf("unexpected state file contents:\n%s", string(rawState))
 	}
@@ -121,14 +121,17 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", data.Report.Kind)
 	}
-	if len(data.Report.Checks) != 2 {
-		t.Fatalf("expected two checks, got %d", len(data.Report.Checks))
+	if len(data.Report.Checks) != 3 {
+		t.Fatalf("expected three checks, got %d", len(data.Report.Checks))
 	}
 	if data.Report.Checks[0].Name != "changelog_occ_delta" {
 		t.Fatalf("unexpected first check name: %s", data.Report.Checks[0].Name)
 	}
 	if data.Report.Checks[1].Name != "schema_pack_drift" {
 		t.Fatalf("unexpected second check name: %s", data.Report.Checks[1].Name)
+	}
+	if data.Report.Checks[2].Name != "rate_limit_threshold" {
+		t.Fatalf("unexpected third check name: %s", data.Report.Checks[2].Name)
 	}
 	for _, check := range data.Report.Checks {
 		if check.Status != ops.CheckStatusPass {
@@ -138,7 +141,7 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 			t.Fatal("expected non-blocking checks")
 		}
 	}
-	if data.Report.Summary.Total != 2 || data.Report.Summary.Passed != 2 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+	if data.Report.Summary.Total != 3 || data.Report.Summary.Passed != 3 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
 	}
 }
@@ -247,6 +250,99 @@ func TestOpsRunCommandReturnsPolicyExitOnSchemaPackDrift(t *testing.T) {
 	}
 	if data.Report.Checks[1].Status != ops.CheckStatusFail {
 		t.Fatalf("unexpected schema check status: %s", data.Report.Checks[1].Status)
+	}
+}
+
+func TestOpsRunCommandReturnsPolicyExitOnRateLimitThreshold(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	telemetryPath := filepath.Join(t.TempDir(), "telemetry.json")
+	telemetry := "{\n  \"app_call_count\": 85,\n  \"app_total_cputime\": 20,\n  \"app_total_time\": 10,\n  \"page_call_count\": 10,\n  \"page_total_cputime\": 5,\n  \"page_total_time\": 3,\n  \"ad_account_util_pct\": 2\n}\n"
+	if err := os.WriteFile(telemetryPath, []byte(telemetry), 0o600); err != nil {
+		t.Fatalf("write telemetry fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	if err == nil {
+		t.Fatal("expected rate-limit threshold ops run to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected blocking summary: %+v", data.Report.Summary)
+	}
+	if data.Report.Checks[2].Name != "rate_limit_threshold" {
+		t.Fatalf("unexpected rate limit check name: %s", data.Report.Checks[2].Name)
+	}
+	if data.Report.Checks[2].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected rate limit check status: %s", data.Report.Checks[2].Status)
+	}
+}
+
+func TestOpsRunCommandReturnsInputExitOnInvalidRateTelemetryFile(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	telemetryPath := filepath.Join(t.TempDir(), "telemetry.json")
+	telemetry := "{\n  \"app_call_count\": 10,\n  \"unknown\": true\n}\n"
+	if err := os.WriteFile(telemetryPath, []byte(telemetry), 0o600); err != nil {
+		t.Fatalf("write telemetry fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	if err == nil {
+		t.Fatal("expected ops run to fail with invalid telemetry")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodeInput {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodeInput)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stderr))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodeInput {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodeInput)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "input_error" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
 	}
 }
 

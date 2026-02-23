@@ -14,6 +14,7 @@ func TestLoadFailsOnUnknownField(t *testing.T) {
 	path := filepath.Join(dir, "enterprise.yaml")
 	raw := `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -52,6 +53,21 @@ func TestValidateFailsOnSchemaMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateFailsWhenModeUnsupported(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Mode = "legacy"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected unsupported mode error")
+	}
+	if !strings.Contains(err.Error(), "unsupported enterprise mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestResolveWorkspaceUsesDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -77,6 +93,7 @@ func TestResolveWorkspaceFailsForMissingWorkspace(t *testing.T) {
 
 	cfg := &Config{
 		SchemaVersion: SchemaVersion,
+		Mode:          EnterpriseMode,
 		DefaultOrg:    "acme",
 		Orgs: map[string]Org{
 			"acme": {
@@ -113,6 +130,7 @@ func TestResolveWorkspaceFailsForUnknownWorkspace(t *testing.T) {
 func validConfig() *Config {
 	return &Config{
 		SchemaVersion: SchemaVersion,
+		Mode:          EnterpriseMode,
 		DefaultOrg:    "acme",
 		Orgs: map[string]Org{
 			"acme": {

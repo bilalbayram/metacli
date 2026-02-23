@@ -449,6 +449,7 @@ func TestValidateFailsWhenBindingWorkspaceDoesNotExist(t *testing.T) {
 func validAuthzConfig() *Config {
 	return &Config{
 		SchemaVersion: SchemaVersion,
+		Mode:          EnterpriseMode,
 		DefaultOrg:    "acme",
 		Orgs: map[string]Org{
 			"acme": {

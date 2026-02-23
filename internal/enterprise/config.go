@@ -15,11 +15,12 @@ import (
 const SchemaVersion = 1
 
 type Config struct {
-	SchemaVersion int             `yaml:"schema_version"`
-	DefaultOrg    string          `yaml:"default_org,omitempty"`
-	Orgs          map[string]Org  `yaml:"orgs"`
-	Roles         map[string]Role `yaml:"roles,omitempty"`
-	Bindings      []Binding       `yaml:"bindings,omitempty"`
+	SchemaVersion    int              `yaml:"schema_version"`
+	DefaultOrg       string           `yaml:"default_org,omitempty"`
+	Orgs             map[string]Org   `yaml:"orgs"`
+	Roles            map[string]Role  `yaml:"roles,omitempty"`
+	Bindings         []Binding        `yaml:"bindings,omitempty"`
+	SecretGovernance SecretGovernance `yaml:"secret_governance,omitempty"`
 }
 
 type Org struct {
@@ -95,6 +96,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateBindings(c.Orgs, c.Roles, c.Bindings); err != nil {
+		return err
+	}
+	if err := validateSecretGovernance(c.Orgs, c.SecretGovernance); err != nil {
 		return err
 	}
 	return nil

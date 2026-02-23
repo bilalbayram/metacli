@@ -106,22 +106,14 @@ func newAPIGetCommand(runtime Runtime) *cobra.Command {
 				if stream {
 					return nil
 				}
-				return writeJSON(cmd, map[string]any{
-					"status": "ok",
-					"data":   items,
-					"paging": pagination,
-				})
+				return writeSuccess(cmd, runtime, "meta api get", items, pagination, nil)
 			}
 
 			resp, err := client.Do(cmd.Context(), request)
 			if err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
-				"status":     "ok",
-				"data":       resp.Body,
-				"rate_limit": resp.RateLimit,
-			})
+			return writeSuccess(cmd, runtime, "meta api get", resp.Body, nil, resp.RateLimit)
 		},
 	}
 
@@ -187,10 +179,7 @@ func newAPIBatchCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
-				"status":  "ok",
-				"results": results,
-			})
+			return writeSuccess(cmd, runtime, "meta api batch", results, nil, nil)
 		},
 	}
 

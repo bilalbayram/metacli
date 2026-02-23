@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -68,10 +67,10 @@ func newAuthAddCommand(runtime Runtime) *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth add system-user", map[string]any{
 				"status":  "ok",
 				"profile": profile,
-			})
+			}, nil, nil)
 		},
 	}
 	systemUserCmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -151,11 +150,11 @@ func newAuthLoginCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth login", map[string]any{
 				"status":   "ok",
 				"profile":  profile,
 				"auth_url": authURL,
-			})
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -201,11 +200,11 @@ func newAuthPageTokenCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth page-token", map[string]any{
 				"status":         "ok",
 				"profile":        profile,
 				"source_profile": sourceProfile,
-			})
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Target profile name")
@@ -248,10 +247,10 @@ func newAuthAppTokenCommand(runtime Runtime) *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth app-token set", map[string]any{
 				"status":  "ok",
 				"profile": profile,
-			})
+			}, nil, nil)
 		},
 	}
 	setCmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -283,11 +282,11 @@ func newAuthValidateCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth validate", map[string]any{
 				"status":  "ok",
 				"profile": profile,
 				"debug":   resp.Data,
-			})
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -313,10 +312,10 @@ func newAuthRotateCommand(runtime Runtime) *cobra.Command {
 			if err := svc.RotateProfile(cmd.Context(), profile); err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth rotate", map[string]any{
 				"status":  "ok",
 				"profile": profile,
-			})
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -380,10 +379,10 @@ func newAuthDebugTokenCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth debug-token", map[string]any{
 				"status": "ok",
 				"debug":  resp.Data,
-			})
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
@@ -391,7 +390,7 @@ func newAuthDebugTokenCommand(runtime Runtime) *cobra.Command {
 	return cmd
 }
 
-func newAuthListCommand(_ Runtime) *cobra.Command {
+func newAuthListCommand(runtime Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List configured auth profiles",
@@ -405,10 +404,10 @@ func newAuthListCommand(_ Runtime) *cobra.Command {
 				return err
 			}
 
-			return writeJSON(cmd, map[string]any{
+			return writeSuccess(cmd, runtime, "meta auth list", map[string]any{
 				"status":   "ok",
 				"profiles": profiles,
-			})
+			}, nil, nil)
 		},
 	}
 	return cmd
@@ -426,15 +425,6 @@ func mustMarkFlagRequired(cmd *cobra.Command, name string) {
 	if err := cmd.MarkFlagRequired(name); err != nil {
 		panic(fmt.Sprintf("mark flag %q required for %s: %v", name, cmd.Name(), err))
 	}
-}
-
-func writeJSON(cmd *cobra.Command, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-	return err
 }
 
 func csvToSlice(raw string) []string {

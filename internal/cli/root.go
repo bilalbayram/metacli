@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	command "github.com/bilalbayram/metacli/internal/cli/cmd"
 	"github.com/spf13/cobra"
 )
 
@@ -35,12 +36,18 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&flags.Output, "output", "json", "Output format: json|jsonl|table|csv")
 	cmd.PersistentFlags().BoolVar(&flags.Debug, "debug", false, "Enable debug logging")
 
-	cmd.AddCommand(newNotImplementedCommand("auth"))
-	cmd.AddCommand(newNotImplementedCommand("api"))
-	cmd.AddCommand(newNotImplementedCommand("insights"))
-	cmd.AddCommand(newNotImplementedCommand("lint"))
-	cmd.AddCommand(newNotImplementedCommand("schema"))
-	cmd.AddCommand(newNotImplementedCommand("changelog"))
+	runtime := command.Runtime{
+		Profile: &flags.Profile,
+		Output:  &flags.Output,
+		Debug:   &flags.Debug,
+	}
+
+	cmd.AddCommand(command.NewAuthCommand(runtime))
+	cmd.AddCommand(command.NewPlaceholderGroup("api"))
+	cmd.AddCommand(command.NewPlaceholderGroup("insights"))
+	cmd.AddCommand(command.NewPlaceholderGroup("lint"))
+	cmd.AddCommand(command.NewPlaceholderGroup("schema"))
+	cmd.AddCommand(command.NewPlaceholderGroup("changelog"))
 
 	return cmd
 }
@@ -53,15 +60,5 @@ func validateGlobalFlags(flags *GlobalFlags) func(*cobra.Command, []string) erro
 		default:
 			return WrapExit(ExitCodeInput, fmt.Errorf("invalid --output value %q; expected json|jsonl|table|csv", flags.Output))
 		}
-	}
-}
-
-func newNotImplementedCommand(name string) *cobra.Command {
-	return &cobra.Command{
-		Use:   name,
-		Short: fmt.Sprintf("%s command group", name),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return WrapExit(ExitCodeUnknown, fmt.Errorf("%s command group is not implemented yet", name))
-		},
 	}
 }

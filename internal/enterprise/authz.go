@@ -24,6 +24,8 @@ type CommandAuthorizationRequest struct {
 	Command       string
 	OrgName       string
 	WorkspaceName string
+	CorrelationID string
+	AuditPipeline *AuditPipeline
 }
 
 type CommandAuthorizationTrace struct {
@@ -35,8 +37,10 @@ type CommandAuthorizationTrace struct {
 	OrgID              string                 `json:"org_id"`
 	WorkspaceName      string                 `json:"workspace_name"`
 	WorkspaceID        string                 `json:"workspace_id"`
+	CorrelationID      string                 `json:"correlation_id,omitempty"`
 	MatchedBindings    []BindingAuthorization `json:"matched_bindings"`
 	DecisionTrace      []PolicyDecision       `json:"decision_trace"`
+	AuditEvents        []AuditEvent           `json:"audit_events,omitempty"`
 	Allowed            bool                   `json:"allowed"`
 	DenyReason         string                 `json:"deny_reason,omitempty"`
 }
@@ -112,19 +116,29 @@ func (c *Config) AuthorizeCommand(request CommandAuthorizationRequest) (CommandA
 		WorkspaceID:       workspaceContext.WorkspaceID,
 		MatchedBindings:   make([]BindingAuthorization, 0),
 		DecisionTrace:     make([]PolicyDecision, 0),
+		CorrelationID:     strings.TrimSpace(request.CorrelationID),
+		AuditEvents:       make([]AuditEvent, 0),
+	}
+	if request.AuditPipeline != nil && trace.CorrelationID == "" {
+		return trace, errors.New("correlation_id is required when audit pipeline is configured")
 	}
 
 	requiredCapability, ok := commandCapabilityByReference[normalizedCommand]
 	if !ok {
 		reason := fmt.Sprintf("command %q is not mapped to a capability", normalizedCommand)
 		trace.DenyReason = reason
-		return trace, &DenyError{
+		denyErr := &DenyError{
 			Principal:     principal,
 			Command:       normalizedCommand,
 			OrgName:       workspaceContext.OrgName,
 			WorkspaceName: workspaceContext.WorkspaceName,
 			Reason:        reason,
 		}
+		event, err := finalizeAuthorizationDecisionAudit(trace, request, denyErr)
+		if event.EventID != "" {
+			trace.AuditEvents = append(trace.AuditEvents, event)
+		}
+		return trace, err
 	}
 	trace.RequiredCapability = requiredCapability
 
@@ -147,9 +161,17 @@ func (c *Config) AuthorizeCommand(request CommandAuthorizationRequest) (CommandA
 		if errors.As(err, &denyErr) {
 			denyErr.Command = normalizedCommand
 		}
-		return trace, err
+		event, auditErr := finalizeAuthorizationDecisionAudit(trace, request, err)
+		if event.EventID != "" {
+			trace.AuditEvents = append(trace.AuditEvents, event)
+		}
+		return trace, auditErr
 	}
-	return trace, nil
+	event, err := finalizeAuthorizationDecisionAudit(trace, request, nil)
+	if event.EventID != "" {
+		trace.AuditEvents = append(trace.AuditEvents, event)
+	}
+	return trace, err
 }
 
 func normalizeCommandReference(command string) (string, error) {
@@ -328,4 +350,41 @@ func containsCapability(capabilities []string, requiredCapability string) bool {
 		}
 	}
 	return false
+}
+
+func finalizeAuthorizationDecisionAudit(
+	trace CommandAuthorizationTrace,
+	request CommandAuthorizationRequest,
+	authorizationErr error,
+) (AuditEvent, error) {
+	if request.AuditPipeline == nil {
+		return AuditEvent{}, authorizationErr
+	}
+
+	command := strings.TrimSpace(trace.NormalizedCommand)
+	if command == "" {
+		command = strings.TrimSpace(request.Command)
+	}
+	denyReason := strings.TrimSpace(trace.DenyReason)
+	if !trace.Allowed && denyReason == "" && authorizationErr != nil {
+		denyReason = strings.TrimSpace(authorizationErr.Error())
+	}
+
+	event, auditErr := request.AuditPipeline.RecordDecision(DecisionAuditRecord{
+		CorrelationID: trace.CorrelationID,
+		Principal:     trace.Principal,
+		Command:       command,
+		Capability:    trace.RequiredCapability,
+		OrgName:       trace.OrgName,
+		WorkspaceName: trace.WorkspaceName,
+		Allowed:       trace.Allowed,
+		DenyReason:    denyReason,
+	})
+	if auditErr != nil {
+		if authorizationErr != nil {
+			return AuditEvent{}, errors.Join(authorizationErr, auditErr)
+		}
+		return AuditEvent{}, auditErr
+	}
+	return event, authorizationErr
 }

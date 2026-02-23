@@ -231,6 +231,187 @@ bindings:
 	}
 }
 
+func TestEnterpriseAuthzCheckRecordsDecisionAndExecutionAuditEvents(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+`)
+
+	cmd := newEnterpriseAuthzCheckCommand(Runtime{})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "meta api get",
+		"--workspace", "acme/prod",
+		"--correlation-id", "corr-cli-001",
+		"--execution-status", "succeeded",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Allowed       bool   `json:"allowed"`
+			CorrelationID string `json:"correlation_id"`
+			AuditEvents   []struct {
+				EventType       string `json:"event_type"`
+				CorrelationID   string `json:"correlation_id"`
+				ExecutionStatus string `json:"execution_status"`
+				PreviousDigest  string `json:"previous_digest"`
+				Digest          string `json:"digest"`
+				Allowed         *bool  `json:"allowed"`
+			} `json:"audit_events"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if !envelope.Success {
+		t.Fatal("expected success output")
+	}
+	if !envelope.Data.Allowed {
+		t.Fatal("expected allowed authorization result")
+	}
+	if envelope.Data.CorrelationID != "corr-cli-001" {
+		t.Fatalf("unexpected correlation id: %q", envelope.Data.CorrelationID)
+	}
+	if len(envelope.Data.AuditEvents) != 2 {
+		t.Fatalf("unexpected audit event count: %d", len(envelope.Data.AuditEvents))
+	}
+	if envelope.Data.AuditEvents[0].EventType != "decision" {
+		t.Fatalf("unexpected first event type: %q", envelope.Data.AuditEvents[0].EventType)
+	}
+	if envelope.Data.AuditEvents[0].Allowed == nil || !*envelope.Data.AuditEvents[0].Allowed {
+		t.Fatalf("expected decision allowed=true, got %v", envelope.Data.AuditEvents[0].Allowed)
+	}
+	if envelope.Data.AuditEvents[1].EventType != "execution" {
+		t.Fatalf("unexpected second event type: %q", envelope.Data.AuditEvents[1].EventType)
+	}
+	if envelope.Data.AuditEvents[1].ExecutionStatus != "succeeded" {
+		t.Fatalf("unexpected execution status: %q", envelope.Data.AuditEvents[1].ExecutionStatus)
+	}
+	if envelope.Data.AuditEvents[1].PreviousDigest != envelope.Data.AuditEvents[0].Digest {
+		t.Fatalf(
+			"unexpected digest chain: second.previous=%q first.digest=%q",
+			envelope.Data.AuditEvents[1].PreviousDigest,
+			envelope.Data.AuditEvents[0].Digest,
+		)
+	}
+}
+
+func TestEnterpriseAuthzCheckFailsWhenExecutionStatusMissingCorrelationID(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+`)
+
+	cmd := newEnterpriseAuthzCheckCommand(Runtime{})
+	cmd.SetOut(bytes.NewBuffer(nil))
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "meta api get",
+		"--workspace", "acme/prod",
+		"--execution-status", "succeeded",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command to fail when correlation id is missing")
+	}
+	if !strings.Contains(err.Error(), "correlation_id is required when audit pipeline is configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnterpriseAuthzCheckFailsWhenExecutionErrorProvidedWithoutStatus(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+`)
+
+	cmd := newEnterpriseAuthzCheckCommand(Runtime{})
+	cmd.SetOut(bytes.NewBuffer(nil))
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "meta api get",
+		"--workspace", "acme/prod",
+		"--correlation-id", "corr-cli-001",
+		"--execution-error", "request timeout",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command to fail when execution status is missing")
+	}
+	if !strings.Contains(err.Error(), "execution status is required when execution error is provided") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEnterprisePolicyEvalReturnsTrace(t *testing.T) {
 	t.Parallel()
 

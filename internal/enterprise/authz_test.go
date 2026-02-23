@@ -173,6 +173,92 @@ func TestAuthorizeCommandDeniesUnmappedCommand(t *testing.T) {
 	}
 }
 
+func TestAuthorizeCommandRecordsDecisionAuditEvent(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAuthzConfig()
+	pipeline := NewAuditPipeline()
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "meta api get",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		CorrelationID: "corr-allow-001",
+		AuditPipeline: pipeline,
+	})
+	if err != nil {
+		t.Fatalf("authorize command: %v", err)
+	}
+	if trace.CorrelationID != "corr-allow-001" {
+		t.Fatalf("unexpected correlation id: %q", trace.CorrelationID)
+	}
+	if len(trace.AuditEvents) != 1 {
+		t.Fatalf("unexpected audit event count: %d", len(trace.AuditEvents))
+	}
+	if trace.AuditEvents[0].EventType != AuditEventTypeDecision {
+		t.Fatalf("unexpected audit event type: %q", trace.AuditEvents[0].EventType)
+	}
+	if trace.AuditEvents[0].Allowed == nil || !*trace.AuditEvents[0].Allowed {
+		t.Fatalf("unexpected allowed state: %v", trace.AuditEvents[0].Allowed)
+	}
+	events := pipeline.Events()
+	if len(events) != 1 {
+		t.Fatalf("unexpected pipeline event count: %d", len(events))
+	}
+}
+
+func TestAuthorizeCommandRecordsDeniedDecisionAuditEvent(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAuthzConfig()
+	pipeline := NewAuditPipeline()
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "api post",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		CorrelationID: "corr-deny-001",
+		AuditPipeline: pipeline,
+	})
+	if err == nil {
+		t.Fatal("expected deny error")
+	}
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected ErrAuthorizationDenied, got %v", err)
+	}
+	if len(trace.AuditEvents) != 1 {
+		t.Fatalf("unexpected audit event count: %d", len(trace.AuditEvents))
+	}
+	if trace.AuditEvents[0].Allowed == nil || *trace.AuditEvents[0].Allowed {
+		t.Fatalf("expected denied decision allowed=false, got %v", trace.AuditEvents[0].Allowed)
+	}
+	if strings.TrimSpace(trace.AuditEvents[0].DenyReason) == "" {
+		t.Fatal("expected deny reason in audit event")
+	}
+}
+
+func TestAuthorizeCommandFailsWhenAuditPipelineConfiguredWithoutCorrelationID(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAuthzConfig()
+
+	_, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "api get",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		AuditPipeline: NewAuditPipeline(),
+	})
+	if err == nil {
+		t.Fatal("expected correlation id validation error")
+	}
+	if !strings.Contains(err.Error(), "correlation_id is required when audit pipeline is configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateFailsWhenBindingRoleDoesNotExist(t *testing.T) {
 	t.Parallel()
 

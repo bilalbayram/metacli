@@ -1,6 +1,9 @@
 package ops
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEvaluateChangelogOCCDeltaPassesWhenSnapshotUnchanged(t *testing.T) {
 	t.Parallel()
@@ -19,6 +22,12 @@ func TestEvaluateChangelogOCCDeltaPassesWhenSnapshotUnchanged(t *testing.T) {
 	}
 	if check.Blocking {
 		t.Fatal("expected non-blocking check when snapshot is unchanged")
+	}
+	if !strings.Contains(check.Message, "latest_version="+snapshot.LatestVersion) {
+		t.Fatalf("expected latest version fingerprint in pass message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "occ_digest="+snapshot.OCCDigest) {
+		t.Fatalf("expected OCC digest fingerprint in pass message, got %q", check.Message)
 	}
 }
 
@@ -40,5 +49,14 @@ func TestEvaluateChangelogOCCDeltaFailsWhenSnapshotChanges(t *testing.T) {
 	}
 	if !check.Blocking {
 		t.Fatal("expected blocking check when snapshot drifts")
+	}
+	if !strings.Contains(check.Message, "baseline latest_version="+baseline.LatestVersion) {
+		t.Fatalf("expected baseline latest version in drift message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "baseline latest_version="+baseline.LatestVersion+" occ_digest="+baseline.OCCDigest) {
+		t.Fatalf("expected baseline fingerprint in drift message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "current latest_version="+current.LatestVersion+" occ_digest="+current.OCCDigest) {
+		t.Fatalf("expected current fingerprint in drift message, got %q", check.Message)
 	}
 }

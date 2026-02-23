@@ -1,6 +1,9 @@
 package ops
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEvaluateSchemaPackDriftPassesWhenSnapshotUnchanged(t *testing.T) {
 	t.Parallel()
@@ -20,6 +23,15 @@ func TestEvaluateSchemaPackDriftPassesWhenSnapshotUnchanged(t *testing.T) {
 	}
 	if check.Blocking {
 		t.Fatal("expected non-blocking check when schema snapshot is unchanged")
+	}
+	if !strings.Contains(check.Message, "domain="+snapshot.Domain) {
+		t.Fatalf("expected schema domain in pass message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "version="+snapshot.Version) {
+		t.Fatalf("expected schema version in pass message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "sha256="+snapshot.SHA256) {
+		t.Fatalf("expected schema fingerprint in pass message, got %q", check.Message)
 	}
 }
 
@@ -43,6 +55,12 @@ func TestEvaluateSchemaPackDriftFailsWhenSnapshotChanges(t *testing.T) {
 	}
 	if !check.Blocking {
 		t.Fatal("expected blocking check when schema snapshot drifts")
+	}
+	if !strings.Contains(check.Message, "baseline domain="+baseline.Domain+" version="+baseline.Version+" sha256="+baseline.SHA256) {
+		t.Fatalf("expected baseline schema fingerprint in drift message, got %q", check.Message)
+	}
+	if !strings.Contains(check.Message, "current domain="+current.Domain+" version="+current.Version+" sha256="+current.SHA256) {
+		t.Fatalf("expected current schema fingerprint in drift message, got %q", check.Message)
 	}
 }
 

@@ -13,9 +13,11 @@ import (
 )
 
 const SchemaVersion = 1
+const EnterpriseMode = "enterprise"
 
 type Config struct {
 	SchemaVersion    int              `yaml:"schema_version"`
+	Mode             string           `yaml:"mode"`
 	DefaultOrg       string           `yaml:"default_org,omitempty"`
 	Orgs             map[string]Org   `yaml:"orgs"`
 	Roles            map[string]Role  `yaml:"roles,omitempty"`
@@ -56,6 +58,15 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("read enterprise config %s: %w", path, err)
 	}
+	if isLegacy, err := detectLegacyConfigPayload(data); err != nil {
+		return nil, fmt.Errorf("decode enterprise config %s: %w", path, err)
+	} else if isLegacy {
+		return nil, fmt.Errorf(
+			"legacy CLI config detected at %s; run %q",
+			path,
+			legacyCutoverCommandHint(path),
+		)
+	}
 
 	cfg := &Config{}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -69,12 +80,62 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func Save(path string, cfg *Config) error {
+	if cfg == nil {
+		return errors.New("enterprise config is nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create enterprise config directory for %s: %w", path, err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal enterprise config: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), ".enterprise-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create temp enterprise config file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("write temp enterprise config file: %w", err)
+	}
+	if err := tmpFile.Chmod(0o600); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("chmod temp enterprise config file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp enterprise config file: %w", err)
+	}
+	if err := os.Rename(tmpFile.Name(), path); err != nil {
+		return fmt.Errorf("replace enterprise config file %s: %w", path, err)
+	}
+	return nil
+}
+
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("enterprise config is nil")
 	}
 	if c.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported enterprise schema_version=%d (expected %d)", c.SchemaVersion, SchemaVersion)
+	}
+	mode := strings.TrimSpace(c.Mode)
+	if mode == "" {
+		return errors.New("enterprise mode is required; run `meta enterprise mode cutover`")
+	}
+	if mode != EnterpriseMode {
+		return fmt.Errorf(
+			"unsupported enterprise mode %q; only %q is allowed (run `meta enterprise mode cutover`)",
+			mode,
+			EnterpriseMode,
+		)
 	}
 	if len(c.Orgs) == 0 {
 		return errors.New("enterprise orgs map is required")
@@ -201,4 +262,26 @@ func sortedWorkspaceNames(workspaces map[string]Workspace) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func detectLegacyConfigPayload(data []byte) (bool, error) {
+	payload := map[string]any{}
+	if err := yaml.Unmarshal(data, &payload); err != nil {
+		return false, err
+	}
+	if _, exists := payload["profiles"]; exists {
+		return true, nil
+	}
+	if _, exists := payload["default_profile"]; exists {
+		return true, nil
+	}
+	return false, nil
+}
+
+func legacyCutoverCommandHint(path string) string {
+	return fmt.Sprintf(
+		"meta enterprise mode cutover --legacy-config %s --config %s --org <org> --org-id <org-id> --workspace <workspace> --workspace-id <workspace-id> --principal <principal>",
+		path,
+		path,
+	)
 }

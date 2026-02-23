@@ -137,6 +137,7 @@ func newMultiWorkspaceBoundaryHarness() *multiWorkspaceBoundaryHarness {
 	return &multiWorkspaceBoundaryHarness{
 		config: &Config{
 			SchemaVersion: SchemaVersion,
+			Mode:          EnterpriseMode,
 			DefaultOrg:    "agency",
 			Orgs: map[string]Org{
 				"agency": {

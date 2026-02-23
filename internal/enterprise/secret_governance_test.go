@@ -200,6 +200,7 @@ func TestEvaluateSecretAccessFailsOnNilHook(t *testing.T) {
 func validSecretGovernanceConfig() *Config {
 	return &Config{
 		SchemaVersion: SchemaVersion,
+		Mode:          EnterpriseMode,
 		DefaultOrg:    "acme",
 		Orgs: map[string]Org{
 			"acme": {

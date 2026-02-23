@@ -17,6 +17,7 @@ func TestEnterpriseContextResolvesWorkspace(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -71,6 +72,7 @@ func TestEnterpriseContextFailsWhenWorkspaceMissing(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -99,6 +101,7 @@ func TestEnterpriseContextFailsWhenWorkspaceInvalid(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -128,6 +131,7 @@ func TestEnterpriseAuthzCheckAllowsCommand(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -196,6 +200,7 @@ func TestEnterpriseAuthzCheckDeniesCommand(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -239,6 +244,7 @@ func TestEnterpriseAuthzCheckRecordsDecisionAndExecutionAuditEvents(t *testing.T
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -331,6 +337,7 @@ func TestEnterpriseAuthzCheckFailsWhenExecutionStatusMissingCorrelationID(t *tes
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -375,6 +382,7 @@ func TestEnterpriseAuthzCheckFailsWhenExecutionErrorProvidedWithoutStatus(t *tes
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -420,6 +428,7 @@ func TestEnterpriseApprovalRequestApproveValidateFlow(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -556,6 +565,7 @@ func TestEnterpriseAuthzCheckAllowsHighRiskCommandWithApprovalToken(t *testing.T
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -648,6 +658,7 @@ func TestEnterprisePolicyEvalReturnsTrace(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -718,6 +729,7 @@ func TestEnterpriseExecuteRunsFullPipeline(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -824,6 +836,7 @@ func TestEnterpriseExecuteFailsClosedWhenSecretAccessDenied(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -877,6 +890,7 @@ func TestEnterpriseExecuteFailsWhenRequiredSecretFormatInvalid(t *testing.T) {
 
 	configPath := writeEnterpriseConfig(t, `
 schema_version: 1
+mode: enterprise
 default_org: acme
 orgs:
   acme:
@@ -913,6 +927,122 @@ bindings:
 		t.Fatal("expected command to fail when required secret format is invalid")
 	}
 	if !strings.Contains(err.Error(), "invalid --require-secret value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnterpriseModeCutoverMigratesLegacyConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "config.yaml")
+	enterprisePath := filepath.Join(dir, "enterprise.yaml")
+
+	if err := os.WriteFile(legacyPath, []byte(`
+schema_version: 1
+default_profile: prod
+profiles:
+  prod:
+    domain: marketing
+    graph_version: v25.0
+    token_type: system_user
+    token_ref: keychain://meta/prod/token
+`), 0o600); err != nil {
+		t.Fatalf("write legacy config fixture: %v", err)
+	}
+
+	cmd := newEnterpriseModeCutoverCommand(Runtime{})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--legacy-config", legacyPath,
+		"--config", enterprisePath,
+		"--org", "agency",
+		"--org-id", "org_1",
+		"--workspace", "prod",
+		"--workspace-id", "ws_1",
+		"--principal", "ops.admin",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cutover command: %v", err)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			BootstrapRole      string   `json:"bootstrap_role"`
+			BootstrapPrincipal string   `json:"bootstrap_principal"`
+			MigratedProfiles   []string `json:"migrated_profiles"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode cutover output: %v", err)
+	}
+	if !envelope.Success {
+		t.Fatal("expected cutover success output")
+	}
+	if envelope.Data.BootstrapRole != "legacy-cutover-operator" {
+		t.Fatalf("unexpected bootstrap role: %q", envelope.Data.BootstrapRole)
+	}
+	if envelope.Data.BootstrapPrincipal != "ops.admin" {
+		t.Fatalf("unexpected bootstrap principal: %q", envelope.Data.BootstrapPrincipal)
+	}
+	if len(envelope.Data.MigratedProfiles) != 1 || envelope.Data.MigratedProfiles[0] != "prod" {
+		t.Fatalf("unexpected migrated profiles: %+v", envelope.Data.MigratedProfiles)
+	}
+
+	cfg, err := enterprise.Load(enterprisePath)
+	if err != nil {
+		t.Fatalf("load cutover enterprise config: %v", err)
+	}
+	if cfg.Mode != enterprise.EnterpriseMode {
+		t.Fatalf("unexpected enterprise mode: %q", cfg.Mode)
+	}
+}
+
+func TestEnterpriseModeCutoverFailsWhenOutputExists(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "config.yaml")
+	enterprisePath := filepath.Join(dir, "enterprise.yaml")
+
+	if err := os.WriteFile(legacyPath, []byte(`
+schema_version: 1
+default_profile: prod
+profiles:
+  prod:
+    domain: marketing
+    graph_version: v25.0
+    token_type: system_user
+    token_ref: keychain://meta/prod/token
+`), 0o600); err != nil {
+		t.Fatalf("write legacy config fixture: %v", err)
+	}
+	if err := os.WriteFile(enterprisePath, []byte("already-there"), 0o600); err != nil {
+		t.Fatalf("write existing enterprise output: %v", err)
+	}
+
+	cmd := newEnterpriseModeCutoverCommand(Runtime{})
+	cmd.SetOut(bytes.NewBuffer(nil))
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--legacy-config", legacyPath,
+		"--config", enterprisePath,
+		"--org", "agency",
+		"--org-id", "org_1",
+		"--workspace", "prod",
+		"--workspace-id", "ws_1",
+		"--principal", "ops.admin",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected cutover failure when output already exists")
+	}
+	if !strings.Contains(err.Error(), "enterprise config already exists") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

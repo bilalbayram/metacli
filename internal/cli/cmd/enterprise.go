@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/bilalbayram/metacli/internal/config"
 	"github.com/bilalbayram/metacli/internal/enterprise"
 	"github.com/spf13/cobra"
 )
@@ -18,6 +19,7 @@ func NewEnterpriseCommand(runtime Runtime) *cobra.Command {
 	enterpriseCmd.AddCommand(newEnterpriseContextCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseAuthzCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseExecuteCommand(runtime))
+	enterpriseCmd.AddCommand(newEnterpriseModeCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseApprovalCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterprisePolicyCommand(runtime))
 	return enterpriseCmd
@@ -96,6 +98,78 @@ func newEnterpriseAuthzCommand(runtime Runtime) *cobra.Command {
 	}
 	authzCmd.AddCommand(newEnterpriseAuthzCheckCommand(runtime))
 	return authzCmd
+}
+
+func newEnterpriseModeCommand(runtime Runtime) *cobra.Command {
+	modeCmd := &cobra.Command{
+		Use:   "mode",
+		Short: "Enterprise mode cutover and migration commands",
+	}
+	modeCmd.AddCommand(newEnterpriseModeCutoverCommand(runtime))
+	return modeCmd
+}
+
+func newEnterpriseModeCutoverCommand(runtime Runtime) *cobra.Command {
+	var (
+		legacyConfigPath     string
+		enterpriseConfigPath string
+		orgName              string
+		orgID                string
+		workspaceName        string
+		workspaceID          string
+		principal            string
+		force                bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "cutover",
+		Short: "Cut over from legacy config to strict enterprise mode",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			if strings.TrimSpace(legacyConfigPath) == "" {
+				legacyConfigPath, err = appconfig.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+			if strings.TrimSpace(enterpriseConfigPath) == "" {
+				enterpriseConfigPath, err = enterprise.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+
+			result, err := enterprise.CutoverLegacyConfig(enterprise.ModeCutoverRequest{
+				LegacyConfigPath:     legacyConfigPath,
+				EnterpriseConfigPath: enterpriseConfigPath,
+				OrgName:              orgName,
+				OrgID:                orgID,
+				WorkspaceName:        workspaceName,
+				WorkspaceID:          workspaceID,
+				Principal:            principal,
+				Force:                force,
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise mode cutover", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&legacyConfigPath, "legacy-config", "", "Path to legacy ~/.meta/config.yaml")
+	cmd.Flags().StringVar(&enterpriseConfigPath, "config", "", "Path to enterprise config output file")
+	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name for cutover")
+	cmd.Flags().StringVar(&orgID, "org-id", "", "Enterprise org id for cutover")
+	cmd.Flags().StringVar(&workspaceName, "workspace", "", "Enterprise workspace name for cutover")
+	cmd.Flags().StringVar(&workspaceID, "workspace-id", "", "Enterprise workspace id for cutover")
+	cmd.Flags().StringVar(&principal, "principal", "", "Bootstrap principal for enterprise cutover binding")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing enterprise config output")
+	mustMarkFlagRequired(cmd, "org")
+	mustMarkFlagRequired(cmd, "org-id")
+	mustMarkFlagRequired(cmd, "workspace")
+	mustMarkFlagRequired(cmd, "workspace-id")
+	mustMarkFlagRequired(cmd, "principal")
+	return cmd
 }
 
 func newEnterpriseExecuteCommand(runtime Runtime) *cobra.Command {

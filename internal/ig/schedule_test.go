@@ -1,10 +1,13 @@
 package ig
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bilalbayram/metacli/internal/graph"
 )
 
 func TestScheduleServiceLifecycleTransitions(t *testing.T) {
@@ -157,5 +160,110 @@ func TestScheduleServiceDeterministicStateTransitions(t *testing.T) {
 	}
 	if retried.Schedule.RetryCount != 1 {
 		t.Fatalf("unexpected retry count %d", retried.Schedule.RetryCount)
+	}
+}
+
+func TestScheduleServiceSuppressesDuplicateByIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 23, 9, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "schedules.json")
+	service := NewScheduleService(statePath)
+	service.Now = func() time.Time {
+		return now
+	}
+
+	options := SchedulePublishOptions{
+		Profile:        "prod",
+		Version:        "v25.0",
+		Surface:        PublishSurfaceFeed,
+		IdempotencyKey: "feed_01",
+		IGUserID:       "17841400008460056",
+		MediaURL:       "https://cdn.example.com/feed.jpg",
+		Caption:        "hello #meta",
+		MediaType:      MediaTypeImage,
+		StrictMode:     true,
+		PublishAt:      now.Add(2 * time.Hour).Format(time.RFC3339),
+	}
+
+	first, err := service.Schedule(options)
+	if err != nil {
+		t.Fatalf("schedule publish: %v", err)
+	}
+	if first.DuplicateSuppressed {
+		t.Fatal("first schedule should not be duplicate-suppressed")
+	}
+
+	second, err := service.Schedule(options)
+	if err != nil {
+		t.Fatalf("schedule duplicate publish: %v", err)
+	}
+	if !second.DuplicateSuppressed {
+		t.Fatal("expected duplicate_suppressed=true")
+	}
+	if second.Schedule.ScheduleID != first.Schedule.ScheduleID {
+		t.Fatalf("expected duplicate to reuse schedule id %q, got %q", first.Schedule.ScheduleID, second.Schedule.ScheduleID)
+	}
+
+	list, err := service.List(ScheduleListOptions{})
+	if err != nil {
+		t.Fatalf("list schedules: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("expected one persisted schedule, got %d", list.Total)
+	}
+}
+
+func TestScheduleServiceRejectsIdempotencyConflict(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 23, 9, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "schedules.json")
+	service := NewScheduleService(statePath)
+	service.Now = func() time.Time {
+		return now
+	}
+
+	_, err := service.Schedule(SchedulePublishOptions{
+		Profile:        "prod",
+		Version:        "v25.0",
+		Surface:        PublishSurfaceFeed,
+		IdempotencyKey: "feed_01",
+		IGUserID:       "17841400008460056",
+		MediaURL:       "https://cdn.example.com/feed-1.jpg",
+		Caption:        "hello #meta",
+		MediaType:      MediaTypeImage,
+		StrictMode:     true,
+		PublishAt:      now.Add(2 * time.Hour).Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("schedule publish: %v", err)
+	}
+
+	_, err = service.Schedule(SchedulePublishOptions{
+		Profile:        "prod",
+		Version:        "v25.0",
+		Surface:        PublishSurfaceFeed,
+		IdempotencyKey: "feed_01",
+		IGUserID:       "17841400008460056",
+		MediaURL:       "https://cdn.example.com/feed-2.jpg",
+		Caption:        "hello #meta",
+		MediaType:      MediaTypeImage,
+		StrictMode:     true,
+		PublishAt:      now.Add(2 * time.Hour).Format(time.RFC3339),
+	})
+	if err == nil {
+		t.Fatal("expected idempotency conflict")
+	}
+
+	var apiErr *graph.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected structured api error, got %T", err)
+	}
+	if apiErr.Type != igErrorTypeIdempotencyConflict {
+		t.Fatalf("unexpected error type %q", apiErr.Type)
+	}
+	if apiErr.Retryable {
+		t.Fatalf("expected retryable=false, got %+v", apiErr)
 	}
 }

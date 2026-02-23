@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -133,6 +134,7 @@ func TestIGPublishFeedCommandExecutesImmediateFlow(t *testing.T) {
 		"--media-url", "https://cdn.example.com/image.jpg",
 		"--caption", "hello #meta",
 		"--media-type", "IMAGE",
+		"--idempotency-key", "feed_01",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -149,6 +151,13 @@ func TestIGPublishFeedCommandExecutesImmediateFlow(t *testing.T) {
 	}
 	if uploadURL.Path != "/v25.0/17841400008460056/media" {
 		t.Fatalf("unexpected upload path %q", uploadURL.Path)
+	}
+	uploadForm, err := url.ParseQuery(stub.calls[0].body)
+	if err != nil {
+		t.Fatalf("parse upload form: %v", err)
+	}
+	if got := uploadForm.Get("idempotency_key"); got != "feed_01" {
+		t.Fatalf("unexpected idempotency_key %q", got)
 	}
 
 	statusURL, err := url.Parse(stub.calls[1].url)
@@ -176,6 +185,9 @@ func TestIGPublishFeedCommandExecutesImmediateFlow(t *testing.T) {
 	if got := publishForm.Get("creation_id"); got != "creation_99" {
 		t.Fatalf("unexpected creation_id %q", got)
 	}
+	if got := publishForm.Get("idempotency_key"); got != "feed_01" {
+		t.Fatalf("unexpected idempotency_key %q", got)
+	}
 
 	envelope := decodeEnvelope(t, output.Bytes())
 	assertEnvelopeBasics(t, envelope, "meta ig publish feed")
@@ -194,6 +206,9 @@ func TestIGPublishFeedCommandExecutesImmediateFlow(t *testing.T) {
 	}
 	if got := data["status_code"]; got != "FINISHED" {
 		t.Fatalf("unexpected status_code %v", got)
+	}
+	if got := data["idempotency_key"]; got != "feed_01" {
+		t.Fatalf("unexpected idempotency_key %v", got)
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
@@ -261,6 +276,74 @@ func TestIGPublishFeedCommandWritesStructuredErrorWhenNotReady(t *testing.T) {
 	}
 	if envelope["success"] != false {
 		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["retryable"]; got != true {
+		t.Fatalf("expected retryable=true, got %v", got)
+	}
+	if got := errorBody["type"]; got != "ig_media_not_ready" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+}
+
+func TestIGPublishFeedCommandWritesStructuredTransientError(t *testing.T) {
+	stub := &igPublishSequenceHTTPClient{
+		t: t,
+		responses: []igPublishSequenceResponse{
+			{
+				err: errors.New("dial tcp timeout"),
+			},
+		},
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected transient command error")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_transient_error" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	if got := errorBody["retryable"]; got != true {
+		t.Fatalf("expected retryable=true, got %v", got)
 	}
 }
 

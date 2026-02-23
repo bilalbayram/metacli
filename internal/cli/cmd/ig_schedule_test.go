@@ -310,3 +310,174 @@ func TestIGPublishScheduleCancelRejectsInvalidTransition(t *testing.T) {
 		t.Fatalf("expected success=false, got %v", envelope["success"])
 	}
 }
+
+func TestIGPublishFeedScheduleSuppressesDuplicateByIdempotencyKey(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	statePath := t.TempDir() + "/ig-schedules.json"
+	publishAt := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+
+	firstOut := &bytes.Buffer{}
+	firstCmd := NewIGCommand(testRuntime("prod"))
+	firstCmd.SilenceErrors = true
+	firstCmd.SilenceUsage = true
+	firstCmd.SetOut(firstOut)
+	firstCmd.SetErr(&bytes.Buffer{})
+	firstCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--idempotency-key", "feed_01",
+		"--publish-at", publishAt,
+		"--schedule-state-path", statePath,
+	})
+	if err := firstCmd.Execute(); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+
+	secondOut := &bytes.Buffer{}
+	secondCmd := NewIGCommand(testRuntime("prod"))
+	secondCmd.SilenceErrors = true
+	secondCmd.SilenceUsage = true
+	secondCmd.SetOut(secondOut)
+	secondCmd.SetErr(&bytes.Buffer{})
+	secondCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--idempotency-key", "feed_01",
+		"--publish-at", publishAt,
+		"--schedule-state-path", statePath,
+	})
+	if err := secondCmd.Execute(); err != nil {
+		t.Fatalf("create duplicate schedule: %v", err)
+	}
+
+	firstEnvelope := decodeEnvelope(t, firstOut.Bytes())
+	firstData, _ := firstEnvelope["data"].(map[string]any)
+	firstSchedule, _ := firstData["schedule"].(map[string]any)
+	firstScheduleID, _ := firstSchedule["schedule_id"].(string)
+
+	secondEnvelope := decodeEnvelope(t, secondOut.Bytes())
+	secondData, _ := secondEnvelope["data"].(map[string]any)
+	if got := secondData["duplicate_suppressed"]; got != true {
+		t.Fatalf("expected duplicate_suppressed=true, got %v", got)
+	}
+	secondSchedule, _ := secondData["schedule"].(map[string]any)
+	secondScheduleID, _ := secondSchedule["schedule_id"].(string)
+	if secondScheduleID != firstScheduleID {
+		t.Fatalf("expected same schedule_id %q, got %q", firstScheduleID, secondScheduleID)
+	}
+
+	listOut := &bytes.Buffer{}
+	listCmd := NewIGCommand(testRuntime("prod"))
+	listCmd.SilenceErrors = true
+	listCmd.SilenceUsage = true
+	listCmd.SetOut(listOut)
+	listCmd.SetErr(&bytes.Buffer{})
+	listCmd.SetArgs([]string{
+		"publish", "schedule", "list",
+		"--schedule-state-path", statePath,
+	})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("list schedules: %v", err)
+	}
+	listEnvelope := decodeEnvelope(t, listOut.Bytes())
+	listData, _ := listEnvelope["data"].(map[string]any)
+	if got := listData["total"]; got != float64(1) {
+		t.Fatalf("expected total=1, got %v", got)
+	}
+
+	if wasCalled {
+		t.Fatal("graph client should not execute for scheduled publish")
+	}
+}
+
+func TestIGPublishFeedScheduleIdempotencyConflictWritesStructuredError(t *testing.T) {
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	statePath := t.TempDir() + "/ig-schedules.json"
+	publishAt := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+
+	createCmd := NewIGCommand(testRuntime("prod"))
+	createCmd.SilenceErrors = true
+	createCmd.SilenceUsage = true
+	createCmd.SetOut(&bytes.Buffer{})
+	createCmd.SetErr(&bytes.Buffer{})
+	createCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed-1.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--idempotency-key", "feed_01",
+		"--publish-at", publishAt,
+		"--schedule-state-path", statePath,
+	})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+
+	errOut := &bytes.Buffer{}
+	conflictCmd := NewIGCommand(testRuntime("prod"))
+	conflictCmd.SilenceErrors = true
+	conflictCmd.SilenceUsage = true
+	conflictCmd.SetOut(&bytes.Buffer{})
+	conflictCmd.SetErr(errOut)
+	conflictCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed-2.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--idempotency-key", "feed_01",
+		"--publish-at", publishAt,
+		"--schedule-state-path", statePath,
+	})
+
+	err := conflictCmd.Execute()
+	if err == nil {
+		t.Fatal("expected idempotency conflict")
+	}
+	envelope := decodeEnvelope(t, errOut.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_idempotency_conflict" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	if got := errorBody["retryable"]; got != false {
+		t.Fatalf("expected retryable=false, got %v", got)
+	}
+}

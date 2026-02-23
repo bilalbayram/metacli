@@ -26,6 +26,7 @@ type MediaUploadOptions struct {
 	Caption        string
 	MediaType      string
 	IsCarouselItem bool
+	IdempotencyKey string
 }
 
 type MediaUploadResult struct {
@@ -47,8 +48,9 @@ type MediaStatusResult struct {
 }
 
 type MediaPublishOptions struct {
-	IGUserID   string
-	CreationID string
+	IGUserID       string
+	CreationID     string
+	IdempotencyKey string
 }
 
 type MediaPublishResult struct {
@@ -60,11 +62,12 @@ type MediaPublishResult struct {
 }
 
 type FeedPublishOptions struct {
-	IGUserID   string
-	MediaURL   string
-	Caption    string
-	MediaType  string
-	StrictMode bool
+	IGUserID       string
+	MediaURL       string
+	Caption        string
+	MediaType      string
+	StrictMode     bool
+	IdempotencyKey string
 }
 
 type FeedPublishResult struct {
@@ -72,6 +75,7 @@ type FeedPublishResult struct {
 	Surface            string                  `json:"surface"`
 	IGUserID           string                  `json:"ig_user_id"`
 	MediaType          string                  `json:"media_type"`
+	IdempotencyKey     string                  `json:"idempotency_key,omitempty"`
 	CreationID         string                  `json:"creation_id"`
 	MediaID            string                  `json:"media_id"`
 	Status             string                  `json:"status,omitempty"`
@@ -213,10 +217,11 @@ func (s *Service) publishImmediate(ctx context.Context, version string, token st
 	}
 
 	uploadResult, err := s.Upload(ctx, version, token, appSecret, MediaUploadOptions{
-		IGUserID:  options.IGUserID,
-		MediaURL:  options.MediaURL,
-		Caption:   options.Caption,
-		MediaType: mediaType,
+		IGUserID:       options.IGUserID,
+		MediaURL:       options.MediaURL,
+		Caption:        options.Caption,
+		MediaType:      mediaType,
+		IdempotencyKey: options.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, err
@@ -234,8 +239,9 @@ func (s *Service) publishImmediate(ctx context.Context, version string, token st
 	}
 
 	publishResult, err := s.Publish(ctx, version, token, appSecret, MediaPublishOptions{
-		IGUserID:   options.IGUserID,
-		CreationID: uploadResult.CreationID,
+		IGUserID:       options.IGUserID,
+		CreationID:     uploadResult.CreationID,
+		IdempotencyKey: options.IdempotencyKey,
 	})
 	if err != nil {
 		return nil, err
@@ -246,6 +252,7 @@ func (s *Service) publishImmediate(ctx context.Context, version string, token st
 		Surface:            surface,
 		IGUserID:           publishResult.IGUserID,
 		MediaType:          uploadResult.MediaType,
+		IdempotencyKey:     options.IdempotencyKey,
 		CreationID:         uploadResult.CreationID,
 		MediaID:            publishResult.MediaID,
 		Status:             statusResult.Status,
@@ -376,6 +383,13 @@ func shapeUploadPayload(options MediaUploadOptions) (string, map[string]string, 
 	if options.IsCarouselItem {
 		form["is_carousel_item"] = "true"
 	}
+	idempotencyKey, err := normalizeIdempotencyKey(options.IdempotencyKey)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if idempotencyKey != "" {
+		form["idempotency_key"] = idempotencyKey
+	}
 
 	return fmt.Sprintf("%s/media", igUserID), form, mediaType, nil
 }
@@ -391,9 +405,18 @@ func shapePublishPayload(options MediaPublishOptions) (string, string, map[strin
 		return "", "", nil, err
 	}
 
-	return igUserID, creationID, map[string]string{
+	form := map[string]string{
 		"creation_id": creationID,
-	}, nil
+	}
+	idempotencyKey, err := normalizeIdempotencyKey(options.IdempotencyKey)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if idempotencyKey != "" {
+		form["idempotency_key"] = idempotencyKey
+	}
+
+	return igUserID, creationID, form, nil
 }
 
 func ensureMediaReadyForPublish(result *MediaStatusResult) error {
@@ -406,7 +429,7 @@ func ensureMediaReadyForPublish(result *MediaStatusResult) error {
 		return errors.New("instagram media status response did not include status_code")
 	}
 	if statusCode != MediaStatusCodeFinished {
-		return fmt.Errorf("instagram media container is not ready for publish: status_code=%s", statusCode)
+		return newMediaNotReadyError(statusCode)
 	}
 	return nil
 }

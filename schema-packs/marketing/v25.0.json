@@ -5,6 +5,9 @@
     "campaign": ["id", "name", "status", "objective", "daily_budget", "lifetime_budget"],
     "adset": ["id", "name", "status", "campaign_id", "billing_event", "optimization_goal"],
     "ad": ["id", "name", "status", "adset_id", "creative"],
+    "creative": ["id", "name", "object_story_id", "object_story_spec", "asset_feed_spec"],
+    "audience": ["id", "name", "subtype", "description", "retention_days"],
+    "catalog": ["id", "name", "vertical", "business"],
     "insights": ["date_start", "date_stop", "impressions", "clicks", "spend", "reach", "actions"]
   },
   "endpoint_params": {
@@ -20,9 +23,68 @@
       "after",
       "async"
     ],
-    "campaigns": ["fields", "effective_status", "limit", "after"]
+    "campaigns": ["fields", "effective_status", "limit", "after"],
+    "campaigns.post": [
+      "name",
+      "status",
+      "objective",
+      "daily_budget",
+      "lifetime_budget",
+      "buying_type",
+      "special_ad_categories",
+      "bid_strategy"
+    ],
+    "adsets.post": [
+      "name",
+      "campaign_id",
+      "status",
+      "billing_event",
+      "optimization_goal",
+      "daily_budget",
+      "lifetime_budget",
+      "bid_amount",
+      "targeting",
+      "start_time",
+      "end_time"
+    ],
+    "ads.post": [
+      "name",
+      "adset_id",
+      "status",
+      "creative",
+      "tracking_specs",
+      "adlabels"
+    ],
+    "adcreatives.post": [
+      "name",
+      "object_story_id",
+      "object_story_spec",
+      "asset_feed_spec",
+      "url_tags",
+      "degrees_of_freedom_spec"
+    ],
+    "customaudiences.post": [
+      "name",
+      "subtype",
+      "description",
+      "customer_file_source",
+      "rule",
+      "retention_days",
+      "prefill"
+    ],
+    "product_catalogs.post": [
+      "name",
+      "vertical",
+      "catalog_segment_filter"
+    ]
   },
   "deprecated_params": {
-    "insights": ["use_unified_attribution_setting"]
+    "insights": ["use_unified_attribution_setting"],
+    "campaigns.post": ["legacy_param", "is_autobid"],
+    "adsets.post": ["legacy_param", "bid_info"],
+    "ads.post": ["legacy_param", "redownload"],
+    "adcreatives.post": ["legacy_param", "object_type"],
+    "customaudiences.post": ["legacy_param", "is_value_based"],
+    "product_catalogs.post": ["legacy_param", "destination_catalog_settings"]
   }
 }

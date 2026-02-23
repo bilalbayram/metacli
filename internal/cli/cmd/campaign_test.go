@@ -121,6 +121,115 @@ func TestCampaignCreateExecutesMutation(t *testing.T) {
 	}
 }
 
+func TestCampaignCreateFailsWithoutBudgetConfirmation(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Launch,objective=OUTCOME_SALES,daily_budget=1000",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "budget change detected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on missing budget confirmation")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign create" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestCampaignCreateFailsWithoutBudgetConfirmationForJSONBudget(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Launch,objective=OUTCOME_SALES,status=PAUSED",
+		"--json", `{"daily_budget":1300}`,
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "budget change detected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when json payload changes budget without confirmation")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign create" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
 func TestCampaignCreateFailsLintValidation(t *testing.T) {
 	wasCalled := false
 	schemaDir := writeCampaignSchemaPack(t)
@@ -228,6 +337,130 @@ func TestCampaignUpdateExecutesMutation(t *testing.T) {
 	if requestURL.Path != "/v25.0/777" {
 		t.Fatalf("unexpected path %q", requestURL.Path)
 	}
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign update")
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignUpdateFailsWithoutBudgetConfirmation(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"update",
+		"--campaign-id", "777",
+		"--params", "daily_budget=2000",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "budget change detected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on missing budget confirmation")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign update" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestCampaignUpdateBudgetMutationAllowsConfirmation(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"success":true}`,
+	}
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"update",
+		"--campaign-id", "777",
+		"--params", "daily_budget=2000",
+		"--confirm-budget-change",
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign update: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/777" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+
+	form, err := url.ParseQuery(stub.lastBody)
+	if err != nil {
+		t.Fatalf("parse form body: %v", err)
+	}
+	if got := form.Get("daily_budget"); got != "2000" {
+		t.Fatalf("unexpected daily_budget %q", got)
+	}
+
 	envelope := decodeEnvelope(t, output.Bytes())
 	assertEnvelopeBasics(t, envelope, "meta campaign update")
 	if errOutput.Len() != 0 {

@@ -49,6 +49,10 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewSchemaCommand(runtime))
 	cmd.AddCommand(command.NewChangelogCommand(runtime))
 	cmd.AddCommand(command.NewIGCommand(runtime))
+	cmd.AddCommand(command.NewWACommand(runtime))
+	cmd.AddCommand(command.NewMSGRCommand(runtime))
+	cmd.AddCommand(command.NewThreadsCommand(runtime))
+	cmd.AddCommand(command.NewCAPICommand(runtime))
 	cmd.AddCommand(command.NewOpsCommand(runtime))
 	cmd.AddCommand(command.NewEnterpriseCommand(runtime))
 

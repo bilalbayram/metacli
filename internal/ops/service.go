@@ -12,9 +12,16 @@ const (
 )
 
 const (
-	checkNameChangelogOCCDelta = "changelog_occ_delta"
-	checkNameSchemaPackDrift   = "schema_pack_drift"
+	checkNameChangelogOCCDelta  = "changelog_occ_delta"
+	checkNameSchemaPackDrift    = "schema_pack_drift"
+	checkNameRateLimitThreshold = "rate_limit_threshold"
 )
+
+const DefaultRateLimitThreshold = 75
+
+type RunOptions struct {
+	RateLimitTelemetry *RateLimitTelemetrySnapshot
+}
 
 func Initialize(statePath string) (InitResult, error) {
 	state, err := InitBaseline(statePath)
@@ -35,6 +42,10 @@ func Initialize(statePath string) (InitResult, error) {
 }
 
 func Run(statePath string) (RunResult, error) {
+	return RunWithOptions(statePath, RunOptions{})
+}
+
+func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 	state, err := LoadBaseline(statePath)
 	if err != nil {
 		switch {
@@ -57,6 +68,15 @@ func Run(statePath string) (RunResult, error) {
 		return RunResult{}, WrapExit(ExitCodeState, err)
 	}
 	report.Checks = append(report.Checks, evaluateSchemaPackDrift(state.Snapshots.SchemaPack, currentSchemaPack))
+
+	rateTelemetry := state.Snapshots.RateLimit
+	if options.RateLimitTelemetry != nil {
+		if err := options.RateLimitTelemetry.Validate(); err != nil {
+			return RunResult{}, WrapExit(ExitCodeInput, err)
+		}
+		rateTelemetry = *options.RateLimitTelemetry
+	}
+	report.Checks = append(report.Checks, evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitThreshold))
 	report.Summary = summarizeChecks(report.Checks)
 
 	return RunResult{
@@ -138,4 +158,42 @@ func evaluateSchemaPackDrift(baseline SchemaPackSnapshot, current SchemaPackSnap
 		)
 	}
 	return check
+}
+
+func evaluateRateLimitThreshold(snapshot RateLimitTelemetrySnapshot, threshold int) Check {
+	check := Check{
+		Name:   checkNameRateLimitThreshold,
+		Status: CheckStatusPass,
+	}
+	metric, value := highestRateLimitMetric(snapshot)
+	check.Message = fmt.Sprintf("rate limit within threshold: max_metric=%s value=%d threshold=%d", metric, value, threshold)
+	if value >= threshold {
+		check.Status = CheckStatusFail
+		check.Blocking = true
+		check.Message = fmt.Sprintf("rate limit threshold exceeded: metric=%s value=%d threshold=%d", metric, value, threshold)
+	}
+	return check
+}
+
+func highestRateLimitMetric(snapshot RateLimitTelemetrySnapshot) (string, int) {
+	metrics := []struct {
+		name  string
+		value int
+	}{
+		{name: "app_call_count", value: snapshot.AppCallCount},
+		{name: "app_total_cputime", value: snapshot.AppTotalCPUTime},
+		{name: "app_total_time", value: snapshot.AppTotalTime},
+		{name: "page_call_count", value: snapshot.PageCallCount},
+		{name: "page_total_cputime", value: snapshot.PageTotalCPUTime},
+		{name: "page_total_time", value: snapshot.PageTotalTime},
+		{name: "ad_account_util_pct", value: snapshot.AdAccountUtilPct},
+	}
+
+	maxMetric := metrics[0]
+	for _, metric := range metrics[1:] {
+		if metric.value > maxMetric.value {
+			maxMetric = metric
+		}
+	}
+	return maxMetric.name, maxMetric.value
 }

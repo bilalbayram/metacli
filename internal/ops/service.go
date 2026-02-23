@@ -11,7 +11,10 @@ const (
 	CheckStatusFail = "fail"
 )
 
-const checkNameChangelogOCCDelta = "changelog_occ_delta"
+const (
+	checkNameChangelogOCCDelta = "changelog_occ_delta"
+	checkNameSchemaPackDrift   = "schema_pack_drift"
+)
 
 func Initialize(statePath string) (InitResult, error) {
 	state, err := InitBaseline(statePath)
@@ -48,6 +51,12 @@ func Run(statePath string) (RunResult, error) {
 		return RunResult{}, WrapExit(ExitCodeState, err)
 	}
 	report.Checks = append(report.Checks, evaluateChangelogOCCDelta(state.Snapshots.ChangelogOCC, currentSnapshot))
+
+	currentSchemaPack, err := captureSchemaPackSnapshot()
+	if err != nil {
+		return RunResult{}, WrapExit(ExitCodeState, err)
+	}
+	report.Checks = append(report.Checks, evaluateSchemaPackDrift(state.Snapshots.SchemaPack, currentSchemaPack))
 	report.Summary = summarizeChecks(report.Checks)
 
 	return RunResult{
@@ -99,6 +108,33 @@ func evaluateChangelogOCCDelta(baseline ChangelogOCCSnapshot, current ChangelogO
 			baseline.OCCDigest,
 			current.LatestVersion,
 			current.OCCDigest,
+		)
+	}
+	return check
+}
+
+func evaluateSchemaPackDrift(baseline SchemaPackSnapshot, current SchemaPackSnapshot) Check {
+	check := Check{
+		Name:   checkNameSchemaPackDrift,
+		Status: CheckStatusPass,
+		Message: fmt.Sprintf(
+			"schema pack unchanged: domain=%s version=%s sha256=%s",
+			current.Domain,
+			current.Version,
+			current.SHA256,
+		),
+	}
+	if baseline.Domain != current.Domain || baseline.Version != current.Version || baseline.SHA256 != current.SHA256 {
+		check.Status = CheckStatusFail
+		check.Blocking = true
+		check.Message = fmt.Sprintf(
+			"schema pack drift detected: baseline domain=%s version=%s sha256=%s current domain=%s version=%s sha256=%s",
+			baseline.Domain,
+			baseline.Version,
+			baseline.SHA256,
+			current.Domain,
+			current.Version,
+			current.SHA256,
 		)
 	}
 	return check

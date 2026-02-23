@@ -30,7 +30,7 @@ func TestInitBaselineWritesDeterministicStateFile(t *testing.T) {
 		t.Fatalf("read state file: %v", err)
 	}
 
-	expected := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 2,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    }\n  }\n}\n"
+	expected := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 3,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"432a308e09cb9e1c40c03e992a0f28d70600954f2cb1c939959512a1660a6774\"\n    }\n  }\n}\n"
 	if string(raw) != expected {
 		t.Fatalf("unexpected state file contents:\n%s", string(raw))
 	}
@@ -40,7 +40,7 @@ func TestLoadBaselineFailsOnUnknownField(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "baseline-state.json")
-	raw := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 2,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    }\n  },\n  \"extra\": true\n}\n"
+	raw := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 3,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"432a308e09cb9e1c40c03e992a0f28d70600954f2cb1c939959512a1660a6774\"\n    }\n  },\n  \"extra\": true\n}\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write baseline fixture: %v", err)
 	}

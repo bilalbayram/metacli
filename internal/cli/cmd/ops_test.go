@@ -75,7 +75,7 @@ func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 2,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    }\n  }\n}\n"
+	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 3,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"432a308e09cb9e1c40c03e992a0f28d70600954f2cb1c939959512a1660a6774\"\n    }\n  }\n}\n"
 	if string(rawState) != expectedState {
 		t.Fatalf("unexpected state file contents:\n%s", string(rawState))
 	}
@@ -121,20 +121,24 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", data.Report.Kind)
 	}
-	if len(data.Report.Checks) != 1 {
-		t.Fatalf("expected one check, got %d", len(data.Report.Checks))
+	if len(data.Report.Checks) != 2 {
+		t.Fatalf("expected two checks, got %d", len(data.Report.Checks))
 	}
-	check := data.Report.Checks[0]
-	if check.Name != "changelog_occ_delta" {
-		t.Fatalf("unexpected check name: %s", check.Name)
+	if data.Report.Checks[0].Name != "changelog_occ_delta" {
+		t.Fatalf("unexpected first check name: %s", data.Report.Checks[0].Name)
 	}
-	if check.Status != ops.CheckStatusPass {
-		t.Fatalf("unexpected check status: %s", check.Status)
+	if data.Report.Checks[1].Name != "schema_pack_drift" {
+		t.Fatalf("unexpected second check name: %s", data.Report.Checks[1].Name)
 	}
-	if check.Blocking {
-		t.Fatal("expected non-blocking check")
+	for _, check := range data.Report.Checks {
+		if check.Status != ops.CheckStatusPass {
+			t.Fatalf("unexpected check status: %s", check.Status)
+		}
+		if check.Blocking {
+			t.Fatal("expected non-blocking checks")
+		}
 	}
-	if data.Report.Summary.Total != 1 || data.Report.Summary.Passed != 1 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+	if data.Report.Summary.Total != 2 || data.Report.Summary.Passed != 2 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
 	}
 }
@@ -191,6 +195,58 @@ func TestOpsRunCommandReturnsPolicyExitOnBlockingFindings(t *testing.T) {
 	}
 	if data.Report.Summary.Blocking != 1 {
 		t.Fatalf("unexpected blocking summary: %+v", data.Report.Summary)
+	}
+}
+
+func TestOpsRunCommandReturnsPolicyExitOnSchemaPackDrift(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	state, err := ops.LoadBaseline(statePath)
+	if err != nil {
+		t.Fatalf("load baseline state: %v", err)
+	}
+	state.Snapshots.SchemaPack.SHA256 = "drifted"
+	if err := ops.SaveBaseline(statePath, state); err != nil {
+		t.Fatalf("save baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	if err == nil {
+		t.Fatal("expected schema-drift ops run to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected blocking summary: %+v", data.Report.Summary)
+	}
+	if data.Report.Checks[1].Name != "schema_pack_drift" {
+		t.Fatalf("unexpected schema check name: %s", data.Report.Checks[1].Name)
+	}
+	if data.Report.Checks[1].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected schema check status: %s", data.Report.Checks[1].Status)
 	}
 }
 

@@ -116,6 +116,7 @@ func newIGPublishCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.C
 	publishCmd.AddCommand(newIGPublishFeedCommand(runtime, pluginRuntime))
 	publishCmd.AddCommand(newIGPublishReelCommand(runtime, pluginRuntime))
 	publishCmd.AddCommand(newIGPublishStoryCommand(runtime, pluginRuntime))
+	publishCmd.AddCommand(newIGPublishScheduleCommand(runtime, pluginRuntime))
 	return publishCmd
 }
 
@@ -308,13 +309,15 @@ func newIGPublishStoryCommand(runtime Runtime, pluginRuntime plugin.Runtime) *co
 
 func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime, spec igPublishImmediateSpec) *cobra.Command {
 	var (
-		profile   string
-		version   string
-		igUserID  string
-		mediaURL  string
-		caption   string
-		mediaType string
-		strict    bool
+		profile           string
+		version           string
+		igUserID          string
+		mediaURL          string
+		caption           string
+		mediaType         string
+		publishAt         string
+		scheduleStatePath string
+		strict            bool
 	)
 
 	cmd := &cobra.Command{
@@ -363,6 +366,30 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 				return writeCommandError(cmd, runtime, spec.commandName, err)
 			}
 
+			if strings.TrimSpace(publishAt) != "" {
+				resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
+				if err != nil {
+					return writeCommandError(cmd, runtime, spec.commandName, err)
+				}
+
+				scheduleService := ig.NewScheduleService(resolvedSchedulePath)
+				result, err := scheduleService.Schedule(ig.SchedulePublishOptions{
+					Profile:    creds.Name,
+					Version:    resolvedVersion,
+					Surface:    spec.surface,
+					IGUserID:   options.IGUserID,
+					MediaURL:   options.MediaURL,
+					Caption:    options.Caption,
+					MediaType:  options.MediaType,
+					StrictMode: options.StrictMode,
+					PublishAt:  publishAt,
+				})
+				if err != nil {
+					return writeCommandError(cmd, runtime, spec.commandName, err)
+				}
+				return writeSuccess(cmd, runtime, spec.commandName, result, nil, nil)
+			}
+
 			service := ig.New(igNewGraphClient())
 			var result *ig.FeedPublishResult
 			switch spec.surface {
@@ -389,7 +416,146 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL (required)")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption (required)")
 	cmd.Flags().StringVar(&mediaType, "media-type", spec.defaultMediaType, spec.mediaTypeHelp)
+	cmd.Flags().StringVar(&publishAt, "publish-at", "", "Schedule publish time (RFC3339); when set, publish is scheduled instead of immediate execution")
+	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
 	cmd.Flags().BoolVar(&strict, "strict", true, "Treat caption warnings as errors")
+	return cmd
+}
+
+func newIGPublishScheduleCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	scheduleCmd := &cobra.Command{
+		Use:   "schedule",
+		Short: "Instagram publish schedule lifecycle commands",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New("ig publish schedule requires a subcommand")
+		},
+	}
+	scheduleCmd.AddCommand(newIGPublishScheduleListCommand(runtime, pluginRuntime))
+	scheduleCmd.AddCommand(newIGPublishScheduleCancelCommand(runtime, pluginRuntime))
+	scheduleCmd.AddCommand(newIGPublishScheduleRetryCommand(runtime, pluginRuntime))
+	return scheduleCmd
+}
+
+func newIGPublishScheduleListCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		status            string
+		scheduleStatePath string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List scheduled Instagram publish jobs",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "publish-schedule-list",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+			}
+
+			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+			}
+
+			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
+			result, err := scheduleService.List(ig.ScheduleListOptions{
+				Status: status,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+			}
+			return writeSuccess(cmd, runtime, "meta ig publish schedule list", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status: scheduled|canceled|failed")
+	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
+	return cmd
+}
+
+func newIGPublishScheduleCancelCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		scheduleID        string
+		scheduleStatePath string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "cancel",
+		Short: "Cancel a scheduled Instagram publish job",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "publish-schedule-cancel",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+			}
+
+			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+			}
+
+			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
+			result, err := scheduleService.Cancel(ig.ScheduleCancelOptions{
+				ScheduleID: scheduleID,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+			}
+			return writeSuccess(cmd, runtime, "meta ig publish schedule cancel", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&scheduleID, "schedule-id", "", "Schedule identifier")
+	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
+	return cmd
+}
+
+func newIGPublishScheduleRetryCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		scheduleID        string
+		publishAt         string
+		scheduleStatePath string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "retry",
+		Short: "Retry a canceled or failed Instagram publish schedule",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "publish-schedule-retry",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+			}
+
+			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+			}
+
+			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
+			result, err := scheduleService.Retry(ig.ScheduleRetryOptions{
+				ScheduleID: scheduleID,
+				PublishAt:  publishAt,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+			}
+			return writeSuccess(cmd, runtime, "meta ig publish schedule retry", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&scheduleID, "schedule-id", "", "Schedule identifier")
+	cmd.Flags().StringVar(&publishAt, "publish-at", "", "Retry publish time (RFC3339); defaults to existing schedule time")
+	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
 	return cmd
 }
 
@@ -416,4 +582,12 @@ func resolveIGProfileAndVersion(runtime Runtime, profile string, version string)
 	}
 
 	return creds, resolvedVersion, nil
+}
+
+func resolveIGScheduleStatePath(path string) (string, error) {
+	resolvedPath := strings.TrimSpace(path)
+	if resolvedPath != "" {
+		return resolvedPath, nil
+	}
+	return ig.DefaultScheduleStatePath()
 }

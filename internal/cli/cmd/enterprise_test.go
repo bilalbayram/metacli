@@ -231,6 +231,76 @@ bindings:
 	}
 }
 
+func TestEnterprisePolicyEvalReturnsTrace(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+`)
+
+	cmd := newEnterprisePolicyEvalCommand(Runtime{})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--capability", "graph.read",
+		"--workspace", "acme/prod",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Allowed       bool `json:"allowed"`
+			DecisionTrace []struct {
+				Effect     string `json:"effect"`
+				Matched    bool   `json:"matched"`
+				Capability string `json:"capability"`
+			} `json:"decision_trace"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if !envelope.Success {
+		t.Fatal("expected success output")
+	}
+	if !envelope.Data.Allowed {
+		t.Fatal("expected allowed policy evaluation result")
+	}
+	if len(envelope.Data.DecisionTrace) != 2 {
+		t.Fatalf("unexpected decision trace length: %d", len(envelope.Data.DecisionTrace))
+	}
+	if envelope.Data.DecisionTrace[0].Effect != "deny" || envelope.Data.DecisionTrace[0].Matched {
+		t.Fatalf("unexpected decision trace[0]: %+v", envelope.Data.DecisionTrace[0])
+	}
+	if envelope.Data.DecisionTrace[1].Effect != "allow" || !envelope.Data.DecisionTrace[1].Matched {
+		t.Fatalf("unexpected decision trace[1]: %+v", envelope.Data.DecisionTrace[1])
+	}
+}
+
 func writeEnterpriseConfig(t *testing.T, content string) string {
 	t.Helper()
 

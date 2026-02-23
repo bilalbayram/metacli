@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -96,17 +97,24 @@ func newEnterpriseAuthzCommand(runtime Runtime) *cobra.Command {
 
 func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 	var (
-		configPath string
-		principal  string
-		commandRef string
-		orgName    string
-		workspace  string
+		configPath      string
+		principal       string
+		commandRef      string
+		orgName         string
+		workspace       string
+		correlationID   string
+		executionStatus string
+		executionError  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Evaluate command authorization in an enterprise workspace",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(executionError) != "" && strings.TrimSpace(executionStatus) == "" {
+				return errors.New("execution status is required when execution error is provided")
+			}
+
 			resolvedOrg, resolvedWorkspace, err := resolveWorkspaceSelection(orgName, workspace)
 			if err != nil {
 				return err
@@ -123,14 +131,38 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 
+			var auditPipeline *enterprise.AuditPipeline
+			if strings.TrimSpace(correlationID) != "" || strings.TrimSpace(executionStatus) != "" {
+				auditPipeline = enterprise.NewAuditPipeline()
+			}
+
 			trace, err := cfg.AuthorizeCommand(enterprise.CommandAuthorizationRequest{
 				Principal:     principal,
 				Command:       commandRef,
 				OrgName:       resolvedOrg,
 				WorkspaceName: resolvedWorkspace,
+				CorrelationID: correlationID,
+				AuditPipeline: auditPipeline,
 			})
 			if err != nil {
 				return err
+			}
+
+			if strings.TrimSpace(executionStatus) != "" {
+				executionEvent, err := auditPipeline.RecordExecution(enterprise.ExecutionAuditRecord{
+					CorrelationID: correlationID,
+					Principal:     trace.Principal,
+					Command:       trace.NormalizedCommand,
+					Capability:    trace.RequiredCapability,
+					OrgName:       trace.OrgName,
+					WorkspaceName: trace.WorkspaceName,
+					Status:        executionStatus,
+					FailureReason: executionError,
+				})
+				if err != nil {
+					return err
+				}
+				trace.AuditEvents = append(trace.AuditEvents, executionEvent)
 			}
 			return writeSuccess(cmd, runtime, "meta enterprise authz check", trace, nil, nil)
 		},
@@ -141,6 +173,9 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&commandRef, "command", "", "Command reference to authorize (for example \"api get\")")
 	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	cmd.Flags().StringVar(&correlationID, "correlation-id", "", "Correlation id for immutable decision/execution audit events")
+	cmd.Flags().StringVar(&executionStatus, "execution-status", "", "Execution status to record (succeeded|failed)")
+	cmd.Flags().StringVar(&executionError, "execution-error", "", "Execution failure reason (required when --execution-status=failed)")
 	mustMarkFlagRequired(cmd, "principal")
 	mustMarkFlagRequired(cmd, "command")
 	return cmd

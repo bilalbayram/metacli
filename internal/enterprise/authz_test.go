@@ -31,6 +31,15 @@ func TestAuthorizeCommandAllowsBoundCapability(t *testing.T) {
 	if !trace.MatchedBindings[0].GrantsRequiredCapability {
 		t.Fatal("expected matched binding to grant capability")
 	}
+	if len(trace.DecisionTrace) != 2 {
+		t.Fatalf("unexpected decision trace length: %d", len(trace.DecisionTrace))
+	}
+	if trace.DecisionTrace[0].Effect != PolicyEffectDeny || trace.DecisionTrace[0].Matched {
+		t.Fatalf("unexpected decision trace[0]: %+v", trace.DecisionTrace[0])
+	}
+	if trace.DecisionTrace[1].Effect != PolicyEffectAllow || !trace.DecisionTrace[1].Matched {
+		t.Fatalf("unexpected decision trace[1]: %+v", trace.DecisionTrace[1])
+	}
 }
 
 func TestAuthorizeCommandDeniesWhenWorkspaceBindingMissing(t *testing.T) {
@@ -86,8 +95,57 @@ func TestAuthorizeCommandDeniesWhenCapabilityMissing(t *testing.T) {
 	if trace.MatchedBindings[0].GrantsRequiredCapability {
 		t.Fatal("binding should not grant missing capability")
 	}
+	if len(trace.DecisionTrace) != 2 {
+		t.Fatalf("unexpected decision trace length: %d", len(trace.DecisionTrace))
+	}
+	if trace.DecisionTrace[0].Effect != PolicyEffectDeny || trace.DecisionTrace[0].Matched {
+		t.Fatalf("unexpected decision trace[0]: %+v", trace.DecisionTrace[0])
+	}
+	if trace.DecisionTrace[1].Effect != PolicyEffectAllow || trace.DecisionTrace[1].Matched {
+		t.Fatalf("unexpected decision trace[1]: %+v", trace.DecisionTrace[1])
+	}
 	if !strings.Contains(trace.DenyReason, "missing capability") {
 		t.Fatalf("unexpected deny reason: %q", trace.DenyReason)
+	}
+}
+
+func TestAuthorizeCommandDeniesWhenCapabilityExplicitlyDenied(t *testing.T) {
+	t.Parallel()
+
+	cfg := validAuthzConfig()
+	cfg.Roles["blocked"] = Role{
+		DenyCapabilities: []string{"graph.read"},
+	}
+	cfg.Bindings = append(cfg.Bindings, Binding{
+		Principal: "alice",
+		Role:      "blocked",
+		Org:       "acme",
+		Workspace: "prod",
+	})
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "api get",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+	})
+	if err == nil {
+		t.Fatal("expected deny error when capability is explicitly denied")
+	}
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected ErrAuthorizationDenied, got %v", err)
+	}
+	if trace.Allowed {
+		t.Fatal("expected denied trace")
+	}
+	if !strings.Contains(trace.DenyReason, "explicitly denied capability") {
+		t.Fatalf("unexpected deny reason: %q", trace.DenyReason)
+	}
+	if len(trace.MatchedBindings) != 2 {
+		t.Fatalf("unexpected matched bindings: %d", len(trace.MatchedBindings))
+	}
+	if !trace.MatchedBindings[1].DeniesRequiredCapability {
+		t.Fatal("expected deny binding to deny required capability")
 	}
 }
 

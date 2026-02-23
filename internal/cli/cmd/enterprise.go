@@ -15,6 +15,7 @@ func NewEnterpriseCommand(runtime Runtime) *cobra.Command {
 	}
 	enterpriseCmd.AddCommand(newEnterpriseContextCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseAuthzCommand(runtime))
+	enterpriseCmd.AddCommand(newEnterprisePolicyCommand(runtime))
 	return enterpriseCmd
 }
 
@@ -142,5 +143,66 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
 	mustMarkFlagRequired(cmd, "principal")
 	mustMarkFlagRequired(cmd, "command")
+	return cmd
+}
+
+func newEnterprisePolicyCommand(runtime Runtime) *cobra.Command {
+	policyCmd := &cobra.Command{
+		Use:   "policy",
+		Short: "Enterprise policy evaluation",
+	}
+	policyCmd.AddCommand(newEnterprisePolicyEvalCommand(runtime))
+	return policyCmd
+}
+
+func newEnterprisePolicyEvalCommand(runtime Runtime) *cobra.Command {
+	var (
+		configPath string
+		principal  string
+		capability string
+		orgName    string
+		workspace  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "eval",
+		Short: "Evaluate enterprise policy for a capability",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedOrg, resolvedWorkspace, err := resolveWorkspaceSelection(orgName, workspace)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				configPath, err = enterprise.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+
+			cfg, err := enterprise.Load(configPath)
+			if err != nil {
+				return err
+			}
+
+			trace, err := cfg.EvaluatePolicy(enterprise.PolicyEvaluationRequest{
+				Principal:     principal,
+				Capability:    capability,
+				OrgName:       resolvedOrg,
+				WorkspaceName: resolvedWorkspace,
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise policy eval", trace, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to enterprise config file")
+	cmd.Flags().StringVar(&principal, "principal", "", "Principal identity to evaluate")
+	cmd.Flags().StringVar(&capability, "capability", "", "Capability to evaluate (for example \"graph.read\")")
+	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	mustMarkFlagRequired(cmd, "principal")
+	mustMarkFlagRequired(cmd, "capability")
 	return cmd
 }

@@ -8,7 +8,8 @@ import (
 )
 
 type Role struct {
-	Capabilities []string `yaml:"capabilities"`
+	Capabilities     []string `yaml:"capabilities,omitempty"`
+	DenyCapabilities []string `yaml:"deny_capabilities,omitempty"`
 }
 
 type Binding struct {
@@ -35,6 +36,7 @@ type CommandAuthorizationTrace struct {
 	WorkspaceName      string                 `json:"workspace_name"`
 	WorkspaceID        string                 `json:"workspace_id"`
 	MatchedBindings    []BindingAuthorization `json:"matched_bindings"`
+	DecisionTrace      []PolicyDecision       `json:"decision_trace"`
 	Allowed            bool                   `json:"allowed"`
 	DenyReason         string                 `json:"deny_reason,omitempty"`
 }
@@ -46,7 +48,9 @@ type BindingAuthorization struct {
 	OrgName                  string   `json:"org_name"`
 	WorkspaceName            string   `json:"workspace_name"`
 	Capabilities             []string `json:"capabilities"`
+	DenyCapabilities         []string `json:"deny_capabilities"`
 	GrantsRequiredCapability bool     `json:"grants_required_capability"`
+	DeniesRequiredCapability bool     `json:"denies_required_capability"`
 }
 
 var ErrAuthorizationDenied = errors.New("authorization denied")
@@ -54,6 +58,7 @@ var ErrAuthorizationDenied = errors.New("authorization denied")
 type DenyError struct {
 	Principal     string
 	Command       string
+	Capability    string
 	OrgName       string
 	WorkspaceName string
 	Reason        string
@@ -106,6 +111,7 @@ func (c *Config) AuthorizeCommand(request CommandAuthorizationRequest) (CommandA
 		WorkspaceName:     workspaceContext.WorkspaceName,
 		WorkspaceID:       workspaceContext.WorkspaceID,
 		MatchedBindings:   make([]BindingAuthorization, 0),
+		DecisionTrace:     make([]PolicyDecision, 0),
 	}
 
 	requiredCapability, ok := commandCapabilityByReference[normalizedCommand]
@@ -122,59 +128,28 @@ func (c *Config) AuthorizeCommand(request CommandAuthorizationRequest) (CommandA
 	}
 	trace.RequiredCapability = requiredCapability
 
-	for index, binding := range c.Bindings {
-		bindingPrincipal := strings.TrimSpace(binding.Principal)
-		bindingRole := strings.TrimSpace(binding.Role)
-		bindingOrg := strings.TrimSpace(binding.Org)
-		bindingWorkspace := strings.TrimSpace(binding.Workspace)
-		if bindingPrincipal != principal || bindingOrg != workspaceContext.OrgName || bindingWorkspace != workspaceContext.WorkspaceName {
-			continue
-		}
-
-		role := c.Roles[bindingRole]
-		capabilities := uniqueSortedCapabilities(role.Capabilities)
-		grantsRequiredCapability := containsCapability(capabilities, requiredCapability)
-		trace.MatchedBindings = append(trace.MatchedBindings, BindingAuthorization{
-			Index:                    index,
-			Principal:                bindingPrincipal,
-			Role:                     bindingRole,
-			OrgName:                  bindingOrg,
-			WorkspaceName:            bindingWorkspace,
-			Capabilities:             capabilities,
-			GrantsRequiredCapability: grantsRequiredCapability,
-		})
-		if grantsRequiredCapability {
-			trace.Allowed = true
-		}
-	}
-
-	if trace.Allowed {
-		return trace, nil
-	}
-
-	if len(trace.MatchedBindings) == 0 {
-		trace.DenyReason = fmt.Sprintf(
-			"principal %q has no role binding in %q/%q",
-			principal,
-			workspaceContext.OrgName,
-			workspaceContext.WorkspaceName,
-		)
-	} else {
-		trace.DenyReason = fmt.Sprintf(
-			"principal %q is missing capability %q in %q/%q",
-			principal,
-			requiredCapability,
-			workspaceContext.OrgName,
-			workspaceContext.WorkspaceName,
-		)
-	}
-	return trace, &DenyError{
+	policyTrace, err := c.EvaluatePolicy(PolicyEvaluationRequest{
 		Principal:     principal,
-		Command:       normalizedCommand,
+		Capability:    requiredCapability,
 		OrgName:       workspaceContext.OrgName,
 		WorkspaceName: workspaceContext.WorkspaceName,
-		Reason:        trace.DenyReason,
+	})
+	trace.OrgName = policyTrace.OrgName
+	trace.OrgID = policyTrace.OrgID
+	trace.WorkspaceName = policyTrace.WorkspaceName
+	trace.WorkspaceID = policyTrace.WorkspaceID
+	trace.MatchedBindings = policyTrace.MatchedBindings
+	trace.DecisionTrace = policyTrace.DecisionTrace
+	trace.Allowed = policyTrace.Allowed
+	trace.DenyReason = policyTrace.DenyReason
+	if err != nil {
+		var denyErr *DenyError
+		if errors.As(err, &denyErr) {
+			denyErr.Command = normalizedCommand
+		}
+		return trace, err
 	}
+	return trace, nil
 }
 
 func normalizeCommandReference(command string) (string, error) {
@@ -214,6 +189,7 @@ var commandCapabilityByReference = map[string]string{
 	"ops run":                "ops.baseline.read",
 	"enterprise context":     "enterprise.workspace.read",
 	"enterprise authz check": "enterprise.authz.check",
+	"enterprise policy eval": "enterprise.policy.eval",
 }
 
 func validateRoles(roles map[string]Role) error {
@@ -234,20 +210,32 @@ func validateRole(roleName string, role Role) error {
 	if roleName == "" {
 		return errors.New("role name cannot be empty")
 	}
-	if len(role.Capabilities) == 0 {
-		return fmt.Errorf("role %q capabilities are required", roleName)
+	if len(role.Capabilities) == 0 && len(role.DenyCapabilities) == 0 {
+		return fmt.Errorf("role %q capabilities or deny_capabilities are required", roleName)
 	}
 
-	seen := map[string]struct{}{}
+	seenAllow := map[string]struct{}{}
 	for _, rawCapability := range role.Capabilities {
 		capability := strings.TrimSpace(rawCapability)
 		if capability == "" {
 			return fmt.Errorf("role %q capability cannot be empty", roleName)
 		}
-		if _, ok := seen[capability]; ok {
+		if _, ok := seenAllow[capability]; ok {
 			return fmt.Errorf("role %q capability %q is duplicated", roleName, capability)
 		}
-		seen[capability] = struct{}{}
+		seenAllow[capability] = struct{}{}
+	}
+
+	seenDeny := map[string]struct{}{}
+	for _, rawCapability := range role.DenyCapabilities {
+		capability := strings.TrimSpace(rawCapability)
+		if capability == "" {
+			return fmt.Errorf("role %q deny capability cannot be empty", roleName)
+		}
+		if _, ok := seenDeny[capability]; ok {
+			return fmt.Errorf("role %q deny capability %q is duplicated", roleName, capability)
+		}
+		seenDeny[capability] = struct{}{}
 	}
 	return nil
 }

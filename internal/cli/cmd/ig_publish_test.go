@@ -62,7 +62,7 @@ func (c *igPublishSequenceHTTPClient) Do(req *http.Request) (*http.Response, err
 	}, nil
 }
 
-func TestNewIGCommandIncludesPublishFeedSubcommands(t *testing.T) {
+func TestNewIGCommandIncludesPublishSubcommands(t *testing.T) {
 	t.Parallel()
 
 	cmd := NewIGCommand(Runtime{})
@@ -75,12 +75,14 @@ func TestNewIGCommandIncludesPublishFeedSubcommands(t *testing.T) {
 		t.Fatalf("expected publish command, got %#v", publishCmd)
 	}
 
-	feedCmd, _, err := cmd.Find([]string{"publish", "feed"})
-	if err != nil {
-		t.Fatalf("find publish feed command: %v", err)
-	}
-	if feedCmd == nil || feedCmd.Name() != "feed" {
-		t.Fatalf("expected publish feed command, got %#v", feedCmd)
+	for _, name := range []string{"feed", "reel", "story"} {
+		subcommand, _, err := cmd.Find([]string{"publish", name})
+		if err != nil {
+			t.Fatalf("find publish %s command: %v", name, err)
+		}
+		if subcommand == nil || subcommand.Name() != name {
+			t.Fatalf("expected publish %s command, got %#v", name, subcommand)
+		}
 	}
 }
 
@@ -308,6 +310,278 @@ func TestIGPublishFeedCommandFailsFastOnCaptionValidation(t *testing.T) {
 
 	envelope := decodeEnvelope(t, errOutput.Bytes())
 	if got := envelope["command"]; got != "meta ig publish feed" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestIGPublishReelCommandExecutesImmediateFlow(t *testing.T) {
+	stub := &igPublishSequenceHTTPClient{
+		t: t,
+		responses: []igPublishSequenceResponse{
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_55","status_code":"IN_PROGRESS"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_55","status":"FINISHED","status_code":"FINISHED"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"media_77"}`,
+			},
+		},
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "reel",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/reel.mp4",
+		"--caption", "hello #reel",
+		"--media-type", "REELS",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute ig publish reel: %v", err)
+	}
+
+	uploadForm, err := url.ParseQuery(stub.calls[0].body)
+	if err != nil {
+		t.Fatalf("parse upload form: %v", err)
+	}
+	if got := uploadForm.Get("video_url"); got != "https://cdn.example.com/reel.mp4" {
+		t.Fatalf("unexpected video_url %q", got)
+	}
+	if got := uploadForm.Get("media_type"); got != "REELS" {
+		t.Fatalf("unexpected media_type %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta ig publish reel")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["surface"]; got != "reel" {
+		t.Fatalf("unexpected surface %v", got)
+	}
+	if got := data["media_type"]; got != "REELS" {
+		t.Fatalf("unexpected media_type %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestIGPublishStoryCommandExecutesImmediateFlow(t *testing.T) {
+	stub := &igPublishSequenceHTTPClient{
+		t: t,
+		responses: []igPublishSequenceResponse{
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_11","status_code":"IN_PROGRESS"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_11","status":"FINISHED","status_code":"FINISHED"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"media_22"}`,
+			},
+		},
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "story",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/story.mp4",
+		"--caption", "hello #story",
+		"--media-type", "STORIES",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute ig publish story: %v", err)
+	}
+
+	uploadForm, err := url.ParseQuery(stub.calls[0].body)
+	if err != nil {
+		t.Fatalf("parse upload form: %v", err)
+	}
+	if got := uploadForm.Get("video_url"); got != "https://cdn.example.com/story.mp4" {
+		t.Fatalf("unexpected video_url %q", got)
+	}
+	if got := uploadForm.Get("media_type"); got != "STORIES" {
+		t.Fatalf("unexpected media_type %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta ig publish story")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["surface"]; got != "story" {
+		t.Fatalf("unexpected surface %v", got)
+	}
+	if got := data["media_type"]; got != "STORIES" {
+		t.Fatalf("unexpected media_type %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestIGPublishReelCommandFailsFastOnInvalidMediaType(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "reel",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/reel.jpg",
+		"--caption", "hello #reel",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "expected REELS") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on media-type validation failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta ig publish reel" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestIGPublishStoryCommandFailsFastOnInvalidMediaType(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "story",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/story.mp4",
+		"--caption", "hello #story",
+		"--media-type", "VIDEO",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "expected STORIES") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on media-type validation failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta ig publish story" {
 		t.Fatalf("unexpected command field %v", got)
 	}
 	if envelope["success"] != false {

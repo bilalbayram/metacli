@@ -114,6 +114,8 @@ func newIGPublishCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.C
 		},
 	}
 	publishCmd.AddCommand(newIGPublishFeedCommand(runtime, pluginRuntime))
+	publishCmd.AddCommand(newIGPublishReelCommand(runtime, pluginRuntime))
+	publishCmd.AddCommand(newIGPublishStoryCommand(runtime, pluginRuntime))
 	return publishCmd
 }
 
@@ -205,7 +207,7 @@ func newIGMediaUploadCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id")
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption")
-	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS")
+	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS|STORIES")
 	cmd.Flags().BoolVar(&isCarouselItem, "is-carousel-item", false, "Mark media container as a carousel child")
 	return cmd
 }
@@ -258,7 +260,53 @@ func newIGMediaStatusCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 	return cmd
 }
 
+type igPublishImmediateSpec struct {
+	use              string
+	short            string
+	traceCommand     string
+	commandName      string
+	surface          string
+	defaultMediaType string
+	mediaTypeHelp    string
+}
+
 func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	return newIGPublishImmediateCommand(runtime, pluginRuntime, igPublishImmediateSpec{
+		use:              "feed",
+		short:            "Publish Instagram feed media in immediate mode",
+		traceCommand:     "publish-feed",
+		commandName:      "meta ig publish feed",
+		surface:          ig.PublishSurfaceFeed,
+		defaultMediaType: ig.MediaTypeImage,
+		mediaTypeHelp:    "Media type: IMAGE|VIDEO",
+	})
+}
+
+func newIGPublishReelCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	return newIGPublishImmediateCommand(runtime, pluginRuntime, igPublishImmediateSpec{
+		use:              "reel",
+		short:            "Publish Instagram reels media in immediate mode",
+		traceCommand:     "publish-reel",
+		commandName:      "meta ig publish reel",
+		surface:          ig.PublishSurfaceReel,
+		defaultMediaType: ig.MediaTypeReels,
+		mediaTypeHelp:    "Media type: REELS",
+	})
+}
+
+func newIGPublishStoryCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	return newIGPublishImmediateCommand(runtime, pluginRuntime, igPublishImmediateSpec{
+		use:              "story",
+		short:            "Publish Instagram stories media in immediate mode",
+		traceCommand:     "publish-story",
+		commandName:      "meta ig publish story",
+		surface:          ig.PublishSurfaceStory,
+		defaultMediaType: ig.MediaTypeStories,
+		mediaTypeHelp:    "Media type: STORIES",
+	})
+}
+
+func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime, spec igPublishImmediateSpec) *cobra.Command {
 	var (
 		profile   string
 		version   string
@@ -270,21 +318,21 @@ func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 	)
 
 	cmd := &cobra.Command{
-		Use:   "feed",
-		Short: "Publish Instagram feed media in immediate mode",
+		Use:   spec.use,
+		Short: spec.short,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := pluginRuntime.Trace(plugin.TraceEvent{
 				PluginID:  igPluginID,
 				Namespace: igNamespace,
-				Command:   "publish-feed",
+				Command:   spec.traceCommand,
 			}); err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+				return writeCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+				return writeCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			options := ig.FeedPublishOptions{
@@ -295,9 +343,15 @@ func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 				StrictMode: strict,
 			}
 
+			normalizedMediaType, err := ig.ValidatePublishMediaTypeForSurface(spec.surface, options.MediaType)
+			if err != nil {
+				return writeCommandError(cmd, runtime, spec.commandName, err)
+			}
+			options.MediaType = normalizedMediaType
+
 			captionValidation := ig.ValidateCaption(options.Caption, options.StrictMode)
 			if !captionValidation.Valid {
-				return writeCommandError(cmd, runtime, "meta ig publish feed", errors.New(strings.Join(captionValidation.Errors, "; ")))
+				return writeCommandError(cmd, runtime, spec.commandName, errors.New(strings.Join(captionValidation.Errors, "; ")))
 			}
 
 			if _, _, err := ig.BuildUploadRequest(resolvedVersion, creds.Token, creds.AppSecret, ig.MediaUploadOptions{
@@ -306,16 +360,26 @@ func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 				Caption:   options.Caption,
 				MediaType: options.MediaType,
 			}); err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+				return writeCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			service := ig.New(igNewGraphClient())
-			result, err := service.PublishFeedImmediate(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			var result *ig.FeedPublishResult
+			switch spec.surface {
+			case ig.PublishSurfaceFeed:
+				result, err = service.PublishFeedImmediate(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			case ig.PublishSurfaceReel:
+				result, err = service.PublishReelImmediate(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			case ig.PublishSurfaceStory:
+				result, err = service.PublishStoryImmediate(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			default:
+				err = errors.New("invalid publish command surface")
+			}
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+				return writeCommandError(cmd, runtime, spec.commandName, err)
 			}
 
-			return writeSuccess(cmd, runtime, "meta ig publish feed", result, nil, nil)
+			return writeSuccess(cmd, runtime, spec.commandName, result, nil, nil)
 		},
 	}
 
@@ -324,7 +388,7 @@ func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id (required)")
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL (required)")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption (required)")
-	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS")
+	cmd.Flags().StringVar(&mediaType, "media-type", spec.defaultMediaType, spec.mediaTypeHelp)
 	cmd.Flags().BoolVar(&strict, "strict", true, "Treat caption warnings as errors")
 	return cmd
 }

@@ -28,6 +28,10 @@ var (
 	campaignNewService = func(client *graph.Client) *marketing.Service {
 		return marketing.NewCampaignService(client)
 	}
+	campaignBudgetGuardrailKeys = map[string]struct{}{
+		"daily_budget":    {},
+		"lifetime_budget": {},
+	}
 )
 
 func NewCampaignCommand(runtime Runtime) *cobra.Command {
@@ -48,12 +52,13 @@ func NewCampaignCommand(runtime Runtime) *cobra.Command {
 
 func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile   string
-		version   string
-		accountID string
-		paramsRaw string
-		jsonRaw   string
-		schemaDir string
+		profile             string
+		version             string
+		accountID           string
+		paramsRaw           string
+		jsonRaw             string
+		schemaDir           string
+		confirmBudgetChange bool
 	)
 
 	cmd := &cobra.Command{
@@ -75,6 +80,9 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
 			}
 			if err := mergeParams(form, jsonForm, "--json"); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign create", err)
+			}
+			if err := enforceCampaignBudgetGuardrail(form, confirmBudgetChange); err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
 			}
 
@@ -104,17 +112,19 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
 }
 
 func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile    string
-		version    string
-		campaignID string
-		paramsRaw  string
-		jsonRaw    string
-		schemaDir  string
+		profile             string
+		version             string
+		campaignID          string
+		paramsRaw           string
+		jsonRaw             string
+		schemaDir           string
+		confirmBudgetChange bool
 	)
 
 	cmd := &cobra.Command{
@@ -136,6 +146,9 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 				return writeCommandError(cmd, runtime, "meta campaign update", err)
 			}
 			if err := mergeParams(form, jsonForm, "--json"); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign update", err)
+			}
+			if err := enforceCampaignBudgetGuardrail(form, confirmBudgetChange); err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign update", err)
 			}
 
@@ -165,6 +178,7 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
 }
 
@@ -355,4 +369,21 @@ func lintCampaignReadFields(linter *lint.Linter, fields []string) error {
 		return fmt.Errorf("campaign clone field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
+}
+
+func enforceCampaignBudgetGuardrail(params map[string]string, confirmed bool) error {
+	if !campaignMutationChangesBudget(params) || confirmed {
+		return nil
+	}
+	return errors.New("budget change detected in campaign mutation payload; rerun with --confirm-budget-change")
+}
+
+func campaignMutationChangesBudget(params map[string]string) bool {
+	for key := range params {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if _, exists := campaignBudgetGuardrailKeys[normalized]; exists {
+			return true
+		}
+	}
+	return false
 }

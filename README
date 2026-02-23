@@ -74,6 +74,31 @@ go build -o meta ./cmd/meta
   --format jsonl
 ```
 
+## Track A Workflow (Smoke Demo)
+
+CLI-only Track A workflow coverage (campaign -> adset -> creative -> ad -> audience -> catalog) is scripted in:
+
+- `internal/testutil/track_a_cli_smoke.sh`
+
+The script is fail-fast and validates both success envelopes and an expected structured error envelope (`meta catalog batch-items`).
+
+Prerequisites:
+
+- built CLI binary: `go build -o meta ./cmd/meta`
+- authenticated profile with write permissions
+- `jq` installed
+
+Run:
+
+```bash
+META_BIN=./meta \
+META_PROFILE=prod \
+META_ACCOUNT_ID=<AD_ACCOUNT_ID> \
+META_CATALOG_ID=<CATALOG_ID> \
+META_SCHEMA_DIR=./schema-packs \
+./internal/testutil/track_a_cli_smoke.sh
+```
+
 ## Command Surface
 
 ### Auth

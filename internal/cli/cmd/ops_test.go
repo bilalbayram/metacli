@@ -121,8 +121,8 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", data.Report.Kind)
 	}
-	if len(data.Report.Checks) != 3 {
-		t.Fatalf("expected three checks, got %d", len(data.Report.Checks))
+	if len(data.Report.Checks) != 4 {
+		t.Fatalf("expected four checks, got %d", len(data.Report.Checks))
 	}
 	if data.Report.Checks[0].Name != "changelog_occ_delta" {
 		t.Fatalf("unexpected first check name: %s", data.Report.Checks[0].Name)
@@ -133,6 +133,9 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Checks[2].Name != "rate_limit_threshold" {
 		t.Fatalf("unexpected third check name: %s", data.Report.Checks[2].Name)
 	}
+	if data.Report.Checks[3].Name != "permission_policy_preflight" {
+		t.Fatalf("unexpected fourth check name: %s", data.Report.Checks[3].Name)
+	}
 	for _, check := range data.Report.Checks {
 		if check.Status != ops.CheckStatusPass {
 			t.Fatalf("unexpected check status: %s", check.Status)
@@ -141,7 +144,7 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 			t.Fatal("expected non-blocking checks")
 		}
 	}
-	if data.Report.Summary.Total != 3 || data.Report.Summary.Passed != 3 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+	if data.Report.Summary.Total != 4 || data.Report.Summary.Passed != 4 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
 	}
 }
@@ -346,6 +349,92 @@ func TestOpsRunCommandReturnsInputExitOnInvalidRateTelemetryFile(t *testing.T) {
 	}
 }
 
+func TestOpsRunCommandReturnsPolicyExitOnPreflightViolations(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configBody := "schema_version: 1\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: system_user\n    token_ref: keychain://meta-marketing-cli/prod/token\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(runtimeWithProfile("prod"), "run", "--state-path", statePath, "--preflight-config-path", configPath)
+	if err == nil {
+		t.Fatal("expected ops run to fail on preflight violations")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Checks[3].Name != "permission_policy_preflight" {
+		t.Fatalf("unexpected preflight check name: %s", data.Report.Checks[3].Name)
+	}
+	if data.Report.Checks[3].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[3].Status)
+	}
+	if data.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
+	}
+}
+
+func TestOpsRunCommandPassesPreflightWithValidProfileConfig(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configBody := "schema_version: 1\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: user\n    app_id: app_123\n    token_ref: keychain://meta-marketing-cli/prod/token\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(runtimeWithProfile("prod"), "run", "--state-path", statePath, "--preflight-config-path", configPath)
+	if err != nil {
+		t.Fatalf("execute ops run: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if !envelope.Success {
+		t.Fatal("expected success=true")
+	}
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Checks[3].Name != "permission_policy_preflight" {
+		t.Fatalf("unexpected preflight check name: %s", data.Report.Checks[3].Name)
+	}
+	if data.Report.Checks[3].Status != ops.CheckStatusPass {
+		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[3].Status)
+	}
+}
+
 func TestOpsRunCommandReturnsStateExitOnMissingBaseline(t *testing.T) {
 	t.Parallel()
 
@@ -403,4 +492,14 @@ func decodeOpsEnvelope(t *testing.T, raw []byte) envelopeFixture {
 		t.Fatalf("decode envelope: %v\nraw=%s", err, string(raw))
 	}
 	return envelope
+}
+
+func runtimeWithProfile(profile string) Runtime {
+	output := "json"
+	debug := false
+	return Runtime{
+		Profile: &profile,
+		Output:  &output,
+		Debug:   &debug,
+	}
 }

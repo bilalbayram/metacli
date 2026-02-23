@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bilalbayram/metacli/internal/enterprise"
 )
 
 func TestEnterpriseContextResolvesWorkspace(t *testing.T) {
@@ -409,6 +412,234 @@ bindings:
 	}
 	if !strings.Contains(err.Error(), "execution status is required when execution error is provided") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnterpriseApprovalRequestApproveValidateFlow(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+`)
+
+	requestCmd := newEnterpriseApprovalRequestCommand(Runtime{})
+	requestStdout := &bytes.Buffer{}
+	requestCmd.SetOut(requestStdout)
+	requestCmd.SetErr(bytes.NewBuffer(nil))
+	requestCmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "auth rotate",
+		"--workspace", "acme/prod",
+		"--ttl", "30m",
+	})
+	if err := requestCmd.Execute(); err != nil {
+		t.Fatalf("execute request command: %v", err)
+	}
+
+	var requestEnvelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			RequestToken string `json:"request_token"`
+			Fingerprint  string `json:"fingerprint"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(requestStdout.Bytes(), &requestEnvelope); err != nil {
+		t.Fatalf("decode request output: %v", err)
+	}
+	if !requestEnvelope.Success {
+		t.Fatal("expected request command success output")
+	}
+	if strings.TrimSpace(requestEnvelope.Data.RequestToken) == "" {
+		t.Fatal("expected request token output")
+	}
+	if strings.TrimSpace(requestEnvelope.Data.Fingerprint) == "" {
+		t.Fatal("expected request fingerprint output")
+	}
+
+	approveCmd := newEnterpriseApprovalApproveCommand(Runtime{})
+	approveStdout := &bytes.Buffer{}
+	approveCmd.SetOut(approveStdout)
+	approveCmd.SetErr(bytes.NewBuffer(nil))
+	approveCmd.SetArgs([]string{
+		"--request-token", requestEnvelope.Data.RequestToken,
+		"--approver", "security.lead",
+		"--decision", "approved",
+		"--ttl", "30m",
+	})
+	if err := approveCmd.Execute(); err != nil {
+		t.Fatalf("execute approve command: %v", err)
+	}
+
+	var approveEnvelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			GrantToken  string `json:"grant_token"`
+			Fingerprint string `json:"fingerprint"`
+			Decision    string `json:"decision"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(approveStdout.Bytes(), &approveEnvelope); err != nil {
+		t.Fatalf("decode approve output: %v", err)
+	}
+	if !approveEnvelope.Success {
+		t.Fatal("expected approve command success output")
+	}
+	if strings.TrimSpace(approveEnvelope.Data.GrantToken) == "" {
+		t.Fatal("expected grant token output")
+	}
+	if approveEnvelope.Data.Decision != "approved" {
+		t.Fatalf("unexpected decision: %q", approveEnvelope.Data.Decision)
+	}
+	if approveEnvelope.Data.Fingerprint != requestEnvelope.Data.Fingerprint {
+		t.Fatalf(
+			"unexpected fingerprint mismatch: request=%q approve=%q",
+			requestEnvelope.Data.Fingerprint,
+			approveEnvelope.Data.Fingerprint,
+		)
+	}
+
+	validateCmd := newEnterpriseApprovalValidateCommand(Runtime{})
+	validateStdout := &bytes.Buffer{}
+	validateCmd.SetOut(validateStdout)
+	validateCmd.SetErr(bytes.NewBuffer(nil))
+	validateCmd.SetArgs([]string{
+		"--config", configPath,
+		"--grant-token", approveEnvelope.Data.GrantToken,
+		"--principal", "alice",
+		"--command", "auth rotate",
+		"--workspace", "acme/prod",
+	})
+	if err := validateCmd.Execute(); err != nil {
+		t.Fatalf("execute validate command: %v", err)
+	}
+
+	var validateEnvelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Valid       bool   `json:"valid"`
+			Status      string `json:"status"`
+			Fingerprint string `json:"fingerprint"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(validateStdout.Bytes(), &validateEnvelope); err != nil {
+		t.Fatalf("decode validate output: %v", err)
+	}
+	if !validateEnvelope.Success {
+		t.Fatal("expected validate command success output")
+	}
+	if !validateEnvelope.Data.Valid {
+		t.Fatal("expected validate command to return valid=true")
+	}
+	if validateEnvelope.Data.Status != "approved" {
+		t.Fatalf("unexpected validate status: %q", validateEnvelope.Data.Status)
+	}
+	if validateEnvelope.Data.Fingerprint != requestEnvelope.Data.Fingerprint {
+		t.Fatalf(
+			"unexpected validation fingerprint mismatch: request=%q validate=%q",
+			requestEnvelope.Data.Fingerprint,
+			validateEnvelope.Data.Fingerprint,
+		)
+	}
+}
+
+func TestEnterpriseAuthzCheckAllowsHighRiskCommandWithApprovalToken(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  rotator:
+    capabilities:
+      - auth.rotate
+bindings:
+  - principal: alice
+    role: rotator
+    org: acme
+    workspace: prod
+`)
+
+	now := time.Now().UTC()
+	requestToken, err := enterprise.CreateApprovalRequestToken(enterprise.ApprovalRequestTokenRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		TTL:           20 * time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("create approval request token: %v", err)
+	}
+	grantToken, err := enterprise.CreateApprovalGrantToken(enterprise.ApprovalGrantTokenRequest{
+		RequestToken: requestToken.RequestToken,
+		Approver:     "security.lead",
+		Decision:     enterprise.ApprovalDecisionApproved,
+		TTL:          20 * time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("create approval grant token: %v", err)
+	}
+
+	cmd := newEnterpriseAuthzCheckCommand(Runtime{})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "auth rotate",
+		"--workspace", "acme/prod",
+		"--approval-token", grantToken.GrantToken,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Allowed          bool   `json:"allowed"`
+			ApprovalRequired bool   `json:"approval_required"`
+			ApprovalStatus   string `json:"approval_status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if !envelope.Success {
+		t.Fatal("expected success output")
+	}
+	if !envelope.Data.Allowed {
+		t.Fatal("expected high-risk authorization result to be allowed")
+	}
+	if !envelope.Data.ApprovalRequired {
+		t.Fatal("expected approval_required=true")
+	}
+	if envelope.Data.ApprovalStatus != "approved" {
+		t.Fatalf("unexpected approval status: %q", envelope.Data.ApprovalStatus)
 	}
 }
 

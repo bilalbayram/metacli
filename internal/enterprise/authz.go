@@ -24,25 +24,32 @@ type CommandAuthorizationRequest struct {
 	Command       string
 	OrgName       string
 	WorkspaceName string
+	ApprovalToken string
 	CorrelationID string
 	AuditPipeline *AuditPipeline
 }
 
 type CommandAuthorizationTrace struct {
-	Principal          string                 `json:"principal"`
-	Command            string                 `json:"command"`
-	NormalizedCommand  string                 `json:"normalized_command"`
-	RequiredCapability string                 `json:"required_capability,omitempty"`
-	OrgName            string                 `json:"org_name"`
-	OrgID              string                 `json:"org_id"`
-	WorkspaceName      string                 `json:"workspace_name"`
-	WorkspaceID        string                 `json:"workspace_id"`
-	CorrelationID      string                 `json:"correlation_id,omitempty"`
-	MatchedBindings    []BindingAuthorization `json:"matched_bindings"`
-	DecisionTrace      []PolicyDecision       `json:"decision_trace"`
-	AuditEvents        []AuditEvent           `json:"audit_events,omitempty"`
-	Allowed            bool                   `json:"allowed"`
-	DenyReason         string                 `json:"deny_reason,omitempty"`
+	Principal           string                 `json:"principal"`
+	Command             string                 `json:"command"`
+	NormalizedCommand   string                 `json:"normalized_command"`
+	RequiredCapability  string                 `json:"required_capability,omitempty"`
+	OrgName             string                 `json:"org_name"`
+	OrgID               string                 `json:"org_id"`
+	WorkspaceName       string                 `json:"workspace_name"`
+	WorkspaceID         string                 `json:"workspace_id"`
+	CorrelationID       string                 `json:"correlation_id,omitempty"`
+	MatchedBindings     []BindingAuthorization `json:"matched_bindings"`
+	DecisionTrace       []PolicyDecision       `json:"decision_trace"`
+	AuditEvents         []AuditEvent           `json:"audit_events,omitempty"`
+	ApprovalRequired    bool                   `json:"approval_required"`
+	ApprovalStatus      string                 `json:"approval_status,omitempty"`
+	ApprovalFingerprint string                 `json:"approval_fingerprint,omitempty"`
+	ApprovalDecision    string                 `json:"approval_decision,omitempty"`
+	ApprovalApprover    string                 `json:"approval_approver,omitempty"`
+	ApprovalExpiresAt   string                 `json:"approval_expires_at,omitempty"`
+	Allowed             bool                   `json:"allowed"`
+	DenyReason          string                 `json:"deny_reason,omitempty"`
 }
 
 type BindingAuthorization struct {
@@ -167,6 +174,41 @@ func (c *Config) AuthorizeCommand(request CommandAuthorizationRequest) (CommandA
 		}
 		return trace, auditErr
 	}
+
+	approvalTrace, approvalErr := evaluateApprovalGate(approvalGateRequest{
+		Principal:     principal,
+		Command:       normalizedCommand,
+		OrgName:       workspaceContext.OrgName,
+		WorkspaceName: workspaceContext.WorkspaceName,
+		Token:         request.ApprovalToken,
+	})
+	trace.ApprovalRequired = approvalTrace.Required
+	trace.ApprovalStatus = approvalTrace.Status
+	trace.ApprovalFingerprint = approvalTrace.Fingerprint
+	trace.ApprovalDecision = approvalTrace.Decision
+	trace.ApprovalApprover = approvalTrace.Approver
+	trace.ApprovalExpiresAt = approvalTrace.ExpiresAt
+	if approvalErr != nil {
+		trace.Allowed = false
+		trace.DenyReason = strings.TrimSpace(approvalTrace.DenyReason)
+		if trace.DenyReason == "" {
+			trace.DenyReason = strings.TrimSpace(approvalErr.Error())
+		}
+		denyErr := &DenyError{
+			Principal:     principal,
+			Command:       normalizedCommand,
+			Capability:    requiredCapability,
+			OrgName:       workspaceContext.OrgName,
+			WorkspaceName: workspaceContext.WorkspaceName,
+			Reason:        trace.DenyReason,
+		}
+		event, auditErr := finalizeAuthorizationDecisionAudit(trace, request, denyErr)
+		if event.EventID != "" {
+			trace.AuditEvents = append(trace.AuditEvents, event)
+		}
+		return trace, auditErr
+	}
+
 	event, err := finalizeAuthorizationDecisionAudit(trace, request, nil)
 	if event.EventID != "" {
 		trace.AuditEvents = append(trace.AuditEvents, event)
@@ -189,29 +231,32 @@ func normalizeCommandReference(command string) (string, error) {
 }
 
 var commandCapabilityByReference = map[string]string{
-	"auth add system-user":   "auth.profile.write",
-	"auth login":             "auth.user.login",
-	"auth page-token":        "auth.page-token.write",
-	"auth app-token set":     "auth.app-token.write",
-	"auth validate":          "auth.validate",
-	"auth rotate":            "auth.rotate",
-	"auth debug-token":       "auth.debug-token",
-	"auth list":              "auth.profile.read",
-	"api get":                "graph.read",
-	"api post":               "graph.write",
-	"api delete":             "graph.write",
-	"api batch":              "graph.batch.read",
-	"insights run":           "insights.run",
-	"lint request":           "lint.request",
-	"schema list":            "schema.read",
-	"schema sync":            "schema.write",
-	"changelog check":        "changelog.read",
-	"ig health":              "plugin.ig.health",
-	"ops init":               "ops.baseline.write",
-	"ops run":                "ops.baseline.read",
-	"enterprise context":     "enterprise.workspace.read",
-	"enterprise authz check": "enterprise.authz.check",
-	"enterprise policy eval": "enterprise.policy.eval",
+	"auth add system-user":         "auth.profile.write",
+	"auth login":                   "auth.user.login",
+	"auth page-token":              "auth.page-token.write",
+	"auth app-token set":           "auth.app-token.write",
+	"auth validate":                "auth.validate",
+	"auth rotate":                  "auth.rotate",
+	"auth debug-token":             "auth.debug-token",
+	"auth list":                    "auth.profile.read",
+	"api get":                      "graph.read",
+	"api post":                     "graph.write",
+	"api delete":                   "graph.write",
+	"api batch":                    "graph.batch.read",
+	"insights run":                 "insights.run",
+	"lint request":                 "lint.request",
+	"schema list":                  "schema.read",
+	"schema sync":                  "schema.write",
+	"changelog check":              "changelog.read",
+	"ig health":                    "plugin.ig.health",
+	"ops init":                     "ops.baseline.write",
+	"ops run":                      "ops.baseline.read",
+	"enterprise context":           "enterprise.workspace.read",
+	"enterprise authz check":       "enterprise.authz.check",
+	"enterprise policy eval":       "enterprise.policy.eval",
+	"enterprise approval request":  "enterprise.approval.request",
+	"enterprise approval approve":  "enterprise.approval.approve",
+	"enterprise approval validate": "enterprise.approval.validate",
 }
 
 func validateRoles(roles map[string]Role) error {

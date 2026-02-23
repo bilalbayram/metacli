@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bilalbayram/metacli/internal/enterprise"
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ func NewEnterpriseCommand(runtime Runtime) *cobra.Command {
 	}
 	enterpriseCmd.AddCommand(newEnterpriseContextCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseAuthzCommand(runtime))
+	enterpriseCmd.AddCommand(newEnterpriseApprovalCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterprisePolicyCommand(runtime))
 	return enterpriseCmd
 }
@@ -102,6 +104,7 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 		commandRef      string
 		orgName         string
 		workspace       string
+		approvalToken   string
 		correlationID   string
 		executionStatus string
 		executionError  string
@@ -141,6 +144,7 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 				Command:       commandRef,
 				OrgName:       resolvedOrg,
 				WorkspaceName: resolvedWorkspace,
+				ApprovalToken: approvalToken,
 				CorrelationID: correlationID,
 				AuditPipeline: auditPipeline,
 			})
@@ -173,12 +177,202 @@ func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&commandRef, "command", "", "Command reference to authorize (for example \"api get\")")
 	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	cmd.Flags().StringVar(&approvalToken, "approval-token", "", "Approval grant token for high-risk commands")
 	cmd.Flags().StringVar(&correlationID, "correlation-id", "", "Correlation id for immutable decision/execution audit events")
 	cmd.Flags().StringVar(&executionStatus, "execution-status", "", "Execution status to record (succeeded|failed)")
 	cmd.Flags().StringVar(&executionError, "execution-error", "", "Execution failure reason (required when --execution-status=failed)")
 	mustMarkFlagRequired(cmd, "principal")
 	mustMarkFlagRequired(cmd, "command")
 	return cmd
+}
+
+func newEnterpriseApprovalCommand(runtime Runtime) *cobra.Command {
+	approvalCmd := &cobra.Command{
+		Use:   "approval",
+		Short: "Enterprise approval grants for high-risk commands",
+	}
+	approvalCmd.AddCommand(newEnterpriseApprovalRequestCommand(runtime))
+	approvalCmd.AddCommand(newEnterpriseApprovalApproveCommand(runtime))
+	approvalCmd.AddCommand(newEnterpriseApprovalValidateCommand(runtime))
+	return approvalCmd
+}
+
+func newEnterpriseApprovalRequestCommand(runtime Runtime) *cobra.Command {
+	var (
+		configPath string
+		principal  string
+		commandRef string
+		orgName    string
+		workspace  string
+		ttl        string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "request",
+		Short: "Create an approval request token for a command",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedOrg, resolvedWorkspace, err := resolveWorkspaceSelection(orgName, workspace)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				configPath, err = enterprise.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+
+			cfg, err := enterprise.Load(configPath)
+			if err != nil {
+				return err
+			}
+			workspaceContext, err := cfg.ResolveWorkspace(resolvedOrg, resolvedWorkspace)
+			if err != nil {
+				return err
+			}
+			requestTTL, err := parseEnterpriseApprovalTTL(ttl)
+			if err != nil {
+				return err
+			}
+
+			token, err := enterprise.CreateApprovalRequestToken(enterprise.ApprovalRequestTokenRequest{
+				Principal:     principal,
+				Command:       commandRef,
+				OrgName:       workspaceContext.OrgName,
+				WorkspaceName: workspaceContext.WorkspaceName,
+				TTL:           requestTTL,
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise approval request", token, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to enterprise config file")
+	cmd.Flags().StringVar(&principal, "principal", "", "Principal requesting approval")
+	cmd.Flags().StringVar(&commandRef, "command", "", "Command reference to approve (for example \"auth rotate\")")
+	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	cmd.Flags().StringVar(&ttl, "ttl", "15m", "Request token TTL (for example 15m, 1h)")
+	mustMarkFlagRequired(cmd, "principal")
+	mustMarkFlagRequired(cmd, "command")
+	return cmd
+}
+
+func newEnterpriseApprovalApproveCommand(runtime Runtime) *cobra.Command {
+	var (
+		requestToken string
+		approver     string
+		decision     string
+		ttl          string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "approve",
+		Short: "Approve or reject an approval request token",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			grantTTL, err := parseEnterpriseApprovalTTL(ttl)
+			if err != nil {
+				return err
+			}
+
+			token, err := enterprise.CreateApprovalGrantToken(enterprise.ApprovalGrantTokenRequest{
+				RequestToken: requestToken,
+				Approver:     approver,
+				Decision:     decision,
+				TTL:          grantTTL,
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise approval approve", token, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&requestToken, "request-token", "", "Approval request token")
+	cmd.Flags().StringVar(&approver, "approver", "", "Approver principal")
+	cmd.Flags().StringVar(&decision, "decision", "", "Decision (approved|rejected)")
+	cmd.Flags().StringVar(&ttl, "ttl", "15m", "Grant token TTL (for example 15m, 1h)")
+	mustMarkFlagRequired(cmd, "request-token")
+	mustMarkFlagRequired(cmd, "approver")
+	mustMarkFlagRequired(cmd, "decision")
+	return cmd
+}
+
+func newEnterpriseApprovalValidateCommand(runtime Runtime) *cobra.Command {
+	var (
+		configPath string
+		grantToken string
+		principal  string
+		commandRef string
+		orgName    string
+		workspace  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate an approval grant token against command context",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedOrg, resolvedWorkspace, err := resolveWorkspaceSelection(orgName, workspace)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				configPath, err = enterprise.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+
+			cfg, err := enterprise.Load(configPath)
+			if err != nil {
+				return err
+			}
+			workspaceContext, err := cfg.ResolveWorkspace(resolvedOrg, resolvedWorkspace)
+			if err != nil {
+				return err
+			}
+
+			result, err := enterprise.ValidateApprovalGrantToken(enterprise.ApprovalGrantValidationRequest{
+				GrantToken:    grantToken,
+				Principal:     principal,
+				Command:       commandRef,
+				OrgName:       workspaceContext.OrgName,
+				WorkspaceName: workspaceContext.WorkspaceName,
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise approval validate", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to enterprise config file")
+	cmd.Flags().StringVar(&grantToken, "grant-token", "", "Approval grant token")
+	cmd.Flags().StringVar(&principal, "principal", "", "Principal executing the command")
+	cmd.Flags().StringVar(&commandRef, "command", "", "Command reference to validate")
+	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	mustMarkFlagRequired(cmd, "grant-token")
+	mustMarkFlagRequired(cmd, "principal")
+	mustMarkFlagRequired(cmd, "command")
+	return cmd
+}
+
+func parseEnterpriseApprovalTTL(raw string) (time.Duration, error) {
+	ttlValue := strings.TrimSpace(raw)
+	if ttlValue == "" {
+		return 0, errors.New("ttl is required")
+	}
+	ttl, err := time.ParseDuration(ttlValue)
+	if err != nil {
+		return 0, fmt.Errorf("parse ttl %q: %w", raw, err)
+	}
+	if ttl <= 0 {
+		return 0, errors.New("ttl must be greater than zero")
+	}
+	return ttl, nil
 }
 
 func newEnterprisePolicyCommand(runtime Runtime) *cobra.Command {

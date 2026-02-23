@@ -51,6 +51,7 @@ func newIGPluginManifest(runtime Runtime) plugin.Manifest {
 			}
 			igCmd.AddCommand(newIGHealthCommand(runtime, pluginRuntime))
 			igCmd.AddCommand(newIGMediaCommand(runtime, pluginRuntime))
+			igCmd.AddCommand(newIGCaptionCommand(runtime, pluginRuntime))
 			return igCmd, nil
 		},
 	}
@@ -89,6 +90,51 @@ func newIGMediaCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Com
 	mediaCmd.AddCommand(newIGMediaUploadCommand(runtime, pluginRuntime))
 	mediaCmd.AddCommand(newIGMediaStatusCommand(runtime, pluginRuntime))
 	return mediaCmd
+}
+
+func newIGCaptionCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	captionCmd := &cobra.Command{
+		Use:   "caption",
+		Short: "Instagram caption validation commands",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New("ig caption requires a subcommand")
+		},
+	}
+	captionCmd.AddCommand(newIGCaptionValidateCommand(runtime, pluginRuntime))
+	return captionCmd
+}
+
+func newIGCaptionValidateCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		caption string
+		strict  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate an Instagram caption",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "caption-validate",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig caption validate", err)
+			}
+
+			result := ig.ValidateCaption(caption, strict)
+			if len(result.Errors) > 0 {
+				return writeCommandError(cmd, runtime, "meta ig caption validate", errors.New(strings.Join(result.Errors, "; ")))
+			}
+
+			return writeSuccess(cmd, runtime, "meta ig caption validate", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&caption, "caption", "", "Caption text to validate")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Treat warnings as errors")
+	return cmd
 }
 
 func newIGMediaUploadCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {

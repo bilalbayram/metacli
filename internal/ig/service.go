@@ -13,7 +13,11 @@ const (
 	MediaTypeImage          = "IMAGE"
 	MediaTypeVideo          = "VIDEO"
 	MediaTypeReels          = "REELS"
+	MediaTypeStories        = "STORIES"
 	MediaStatusCodeFinished = "FINISHED"
+	PublishSurfaceFeed      = "feed"
+	PublishSurfaceReel      = "reel"
+	PublishSurfaceStory     = "story"
 )
 
 type MediaUploadOptions struct {
@@ -65,6 +69,7 @@ type FeedPublishOptions struct {
 
 type FeedPublishResult struct {
 	Mode               string                  `json:"mode"`
+	Surface            string                  `json:"surface"`
 	IGUserID           string                  `json:"ig_user_id"`
 	MediaType          string                  `json:"media_type"`
 	CreationID         string                  `json:"creation_id"`
@@ -181,8 +186,25 @@ func (s *Service) Publish(ctx context.Context, version string, token string, app
 }
 
 func (s *Service) PublishFeedImmediate(ctx context.Context, version string, token string, appSecret string, options FeedPublishOptions) (*FeedPublishResult, error) {
+	return s.publishImmediate(ctx, version, token, appSecret, PublishSurfaceFeed, options)
+}
+
+func (s *Service) PublishReelImmediate(ctx context.Context, version string, token string, appSecret string, options FeedPublishOptions) (*FeedPublishResult, error) {
+	return s.publishImmediate(ctx, version, token, appSecret, PublishSurfaceReel, options)
+}
+
+func (s *Service) PublishStoryImmediate(ctx context.Context, version string, token string, appSecret string, options FeedPublishOptions) (*FeedPublishResult, error) {
+	return s.publishImmediate(ctx, version, token, appSecret, PublishSurfaceStory, options)
+}
+
+func (s *Service) publishImmediate(ctx context.Context, version string, token string, appSecret string, surface string, options FeedPublishOptions) (*FeedPublishResult, error) {
 	if s == nil || s.Client == nil {
 		return nil, errors.New("instagram service client is required")
+	}
+
+	mediaType, err := ValidatePublishMediaTypeForSurface(surface, options.MediaType)
+	if err != nil {
+		return nil, err
 	}
 
 	captionValidation := ValidateCaption(options.Caption, options.StrictMode)
@@ -194,7 +216,7 @@ func (s *Service) PublishFeedImmediate(ctx context.Context, version string, toke
 		IGUserID:  options.IGUserID,
 		MediaURL:  options.MediaURL,
 		Caption:   options.Caption,
-		MediaType: options.MediaType,
+		MediaType: mediaType,
 	})
 	if err != nil {
 		return nil, err
@@ -221,6 +243,7 @@ func (s *Service) PublishFeedImmediate(ctx context.Context, version string, toke
 
 	return &FeedPublishResult{
 		Mode:               "immediate",
+		Surface:            surface,
 		IGUserID:           publishResult.IGUserID,
 		MediaType:          uploadResult.MediaType,
 		CreationID:         uploadResult.CreationID,
@@ -234,6 +257,37 @@ func (s *Service) PublishFeedImmediate(ctx context.Context, version string, toke
 		StatusResponse:     statusResult.Response,
 		PublishResponse:    publishResult.Response,
 	}, nil
+}
+
+func ValidatePublishMediaTypeForSurface(surface string, mediaType string) (string, error) {
+	normalizedSurface, err := normalizePublishSurface(surface)
+	if err != nil {
+		return "", err
+	}
+
+	normalizedMediaType, err := normalizeMediaType(mediaType)
+	if err != nil {
+		return "", err
+	}
+
+	switch normalizedSurface {
+	case PublishSurfaceFeed:
+		if normalizedMediaType != MediaTypeImage && normalizedMediaType != MediaTypeVideo {
+			return "", fmt.Errorf("unsupported media type %q for feed publish: expected IMAGE|VIDEO", mediaType)
+		}
+	case PublishSurfaceReel:
+		if normalizedMediaType != MediaTypeReels {
+			return "", fmt.Errorf("unsupported media type %q for reel publish: expected REELS", mediaType)
+		}
+	case PublishSurfaceStory:
+		if normalizedMediaType != MediaTypeStories {
+			return "", fmt.Errorf("unsupported media type %q for story publish: expected STORIES", mediaType)
+		}
+	default:
+		return "", fmt.Errorf("unsupported publish surface %q: expected feed|reel|story", surface)
+	}
+
+	return normalizedMediaType, nil
 }
 
 func BuildUploadRequest(version string, token string, appSecret string, options MediaUploadOptions) (graph.Request, string, error) {
@@ -309,8 +363,11 @@ func shapeUploadPayload(options MediaUploadOptions) (string, map[string]string, 
 	case MediaTypeReels:
 		form["video_url"] = mediaURL
 		form["media_type"] = MediaTypeReels
+	case MediaTypeStories:
+		form["video_url"] = mediaURL
+		form["media_type"] = MediaTypeStories
 	default:
-		return "", nil, "", fmt.Errorf("unsupported media type %q: expected IMAGE|VIDEO|REELS", options.MediaType)
+		return "", nil, "", fmt.Errorf("unsupported media type %q: expected IMAGE|VIDEO|REELS|STORIES", options.MediaType)
 	}
 
 	if caption := strings.TrimSpace(options.Caption); caption != "" {
@@ -357,12 +414,24 @@ func ensureMediaReadyForPublish(result *MediaStatusResult) error {
 func normalizeMediaType(mediaType string) (string, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(mediaType))
 	switch normalized {
-	case MediaTypeImage, MediaTypeVideo, MediaTypeReels:
+	case MediaTypeImage, MediaTypeVideo, MediaTypeReels, MediaTypeStories:
 		return normalized, nil
 	case "":
 		return "", errors.New("media type is required")
 	default:
-		return "", fmt.Errorf("unsupported media type %q: expected IMAGE|VIDEO|REELS", mediaType)
+		return "", fmt.Errorf("unsupported media type %q: expected IMAGE|VIDEO|REELS|STORIES", mediaType)
+	}
+}
+
+func normalizePublishSurface(surface string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(surface))
+	switch normalized {
+	case PublishSurfaceFeed, PublishSurfaceReel, PublishSurfaceStory:
+		return normalized, nil
+	case "":
+		return "", errors.New("publish surface is required")
+	default:
+		return "", fmt.Errorf("unsupported publish surface %q: expected feed|reel|story", surface)
 	}
 }
 

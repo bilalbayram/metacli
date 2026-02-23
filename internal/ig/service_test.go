@@ -133,6 +133,32 @@ func TestBuildUploadRequestShapesImagePayload(t *testing.T) {
 	}
 }
 
+func TestBuildUploadRequestShapesStoriesPayload(t *testing.T) {
+	t.Parallel()
+
+	request, mediaType, err := BuildUploadRequest("v25.0", "token-1", "secret-1", MediaUploadOptions{
+		IGUserID:  "17841400008460056",
+		MediaURL:  "https://cdn.example.com/story.mp4",
+		MediaType: MediaTypeStories,
+	})
+	if err != nil {
+		t.Fatalf("build upload request: %v", err)
+	}
+
+	if request.Path != "17841400008460056/media" {
+		t.Fatalf("unexpected path %q", request.Path)
+	}
+	if request.Form["video_url"] != "https://cdn.example.com/story.mp4" {
+		t.Fatalf("unexpected video_url %q", request.Form["video_url"])
+	}
+	if request.Form["media_type"] != MediaTypeStories {
+		t.Fatalf("unexpected media_type %q", request.Form["media_type"])
+	}
+	if mediaType != MediaTypeStories {
+		t.Fatalf("unexpected media type %q", mediaType)
+	}
+}
+
 func TestBuildUploadRequestRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -288,6 +314,51 @@ func TestBuildPublishRequestRejectsInvalidInput(t *testing.T) {
 			_, _, _, err := BuildPublishRequest("v25.0", "token-1", "secret-1", tc.options)
 			if err == nil {
 				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.errorMsg) {
+				t.Fatalf("expected error containing %q, got %v", tc.errorMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidatePublishMediaTypeForSurfaceRejectsUnsupportedCombination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		surface   string
+		mediaType string
+		errorMsg  string
+	}{
+		{
+			name:      "feed rejects reels",
+			surface:   PublishSurfaceFeed,
+			mediaType: MediaTypeReels,
+			errorMsg:  "expected IMAGE|VIDEO",
+		},
+		{
+			name:      "reel rejects image",
+			surface:   PublishSurfaceReel,
+			mediaType: MediaTypeImage,
+			errorMsg:  "expected REELS",
+		},
+		{
+			name:      "story rejects video",
+			surface:   PublishSurfaceStory,
+			mediaType: MediaTypeVideo,
+			errorMsg:  "expected STORIES",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ValidatePublishMediaTypeForSurface(tc.surface, tc.mediaType)
+			if err == nil {
+				t.Fatal("expected validation error")
 			}
 			if !strings.Contains(err.Error(), tc.errorMsg) {
 				t.Fatalf("expected error containing %q, got %v", tc.errorMsg, err)
@@ -628,6 +699,135 @@ func TestServicePublishFeedImmediateFailsCaptionValidationBeforeUpload(t *testin
 		t.Fatal("expected publish validation error")
 	}
 	if !strings.Contains(err.Error(), "strict mode:") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stub.calls) != 0 {
+		t.Fatalf("expected no graph calls, got %d", len(stub.calls))
+	}
+}
+
+func TestServicePublishReelImmediateExecutesSharedPipeline(t *testing.T) {
+	t.Parallel()
+
+	stub := &sequenceHTTPClient{
+		t: t,
+		responses: []sequenceStubResponse{
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_77","status_code":"IN_PROGRESS"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_77","status":"FINISHED","status_code":"FINISHED"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"media_88"}`,
+			},
+		},
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := New(client)
+
+	result, err := service.PublishReelImmediate(context.Background(), "v25.0", "token-1", "secret-1", FeedPublishOptions{
+		IGUserID:   "17841400008460056",
+		MediaURL:   "https://cdn.example.com/reel.mp4",
+		Caption:    "hello #reel",
+		MediaType:  MediaTypeReels,
+		StrictMode: true,
+	})
+	if err != nil {
+		t.Fatalf("publish reel immediate: %v", err)
+	}
+
+	uploadForm, err := url.ParseQuery(stub.calls[0].body)
+	if err != nil {
+		t.Fatalf("parse upload form: %v", err)
+	}
+	if got := uploadForm.Get("video_url"); got != "https://cdn.example.com/reel.mp4" {
+		t.Fatalf("unexpected video_url %q", got)
+	}
+	if got := uploadForm.Get("media_type"); got != MediaTypeReels {
+		t.Fatalf("unexpected media_type %q", got)
+	}
+	if result.Surface != PublishSurfaceReel {
+		t.Fatalf("unexpected surface %q", result.Surface)
+	}
+}
+
+func TestServicePublishStoryImmediateExecutesSharedPipeline(t *testing.T) {
+	t.Parallel()
+
+	stub := &sequenceHTTPClient{
+		t: t,
+		responses: []sequenceStubResponse{
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_77","status_code":"IN_PROGRESS"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_77","status":"FINISHED","status_code":"FINISHED"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"media_88"}`,
+			},
+		},
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := New(client)
+
+	result, err := service.PublishStoryImmediate(context.Background(), "v25.0", "token-1", "secret-1", FeedPublishOptions{
+		IGUserID:   "17841400008460056",
+		MediaURL:   "https://cdn.example.com/story.mp4",
+		Caption:    "hello #story",
+		MediaType:  MediaTypeStories,
+		StrictMode: true,
+	})
+	if err != nil {
+		t.Fatalf("publish story immediate: %v", err)
+	}
+
+	uploadForm, err := url.ParseQuery(stub.calls[0].body)
+	if err != nil {
+		t.Fatalf("parse upload form: %v", err)
+	}
+	if got := uploadForm.Get("video_url"); got != "https://cdn.example.com/story.mp4" {
+		t.Fatalf("unexpected video_url %q", got)
+	}
+	if got := uploadForm.Get("media_type"); got != MediaTypeStories {
+		t.Fatalf("unexpected media_type %q", got)
+	}
+	if result.Surface != PublishSurfaceStory {
+		t.Fatalf("unexpected surface %q", result.Surface)
+	}
+}
+
+func TestServicePublishReelImmediateFailsOnMediaTypeValidation(t *testing.T) {
+	t.Parallel()
+
+	stub := &sequenceHTTPClient{
+		t:         t,
+		responses: []sequenceStubResponse{},
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := New(client)
+
+	_, err := service.PublishReelImmediate(context.Background(), "v25.0", "token-1", "secret-1", FeedPublishOptions{
+		IGUserID:   "17841400008460056",
+		MediaURL:   "https://cdn.example.com/reel.jpg",
+		Caption:    "hello #reel",
+		MediaType:  MediaTypeImage,
+		StrictMode: true,
+	})
+	if err == nil {
+		t.Fatal("expected media-type validation error")
+	}
+	if !strings.Contains(err.Error(), "expected REELS") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(stub.calls) != 0 {

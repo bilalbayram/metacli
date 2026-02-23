@@ -56,6 +56,11 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewOpsCommand(runtime))
 	cmd.AddCommand(command.NewEnterpriseCommand(runtime))
 	cmd.AddCommand(command.NewCampaignCommand(runtime))
+	cmd.AddCommand(command.NewAdsetCommand(runtime))
+	cmd.AddCommand(command.NewAdCommand(runtime))
+	cmd.AddCommand(command.NewCreativeCommand(runtime))
+	cmd.AddCommand(command.NewAudienceCommand(runtime))
+	cmd.AddCommand(command.NewCatalogCommand(runtime))
 
 	return cmd
 }

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/bilalbayram/metacli/internal/lint"
 )
 
 const (
@@ -16,6 +18,7 @@ const (
 	checkNameSchemaPackDrift           = "schema_pack_drift"
 	checkNameRateLimitThreshold        = "rate_limit_threshold"
 	checkNamePermissionPolicyPreflight = "permission_policy_preflight"
+	checkNameRuntimeResponseShapeDrift = "runtime_response_shape_drift"
 )
 
 const DefaultRateLimitThreshold = 75
@@ -23,6 +26,9 @@ const DefaultRateLimitThreshold = 75
 type RunOptions struct {
 	RateLimitTelemetry  *RateLimitTelemetrySnapshot
 	PermissionPreflight *PermissionPreflightSnapshot
+	RuntimeResponse     *RuntimeResponseShapeSnapshot
+	LintRequestSpec     *lint.RequestSpec
+	LintRequestSpecFile string
 }
 
 func Initialize(statePath string) (InitResult, error) {
@@ -85,6 +91,31 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		preflightSnapshot = *options.PermissionPreflight
 	}
 	report.Checks = append(report.Checks, evaluatePermissionPolicyPreflight(preflightSnapshot))
+
+	if options.RuntimeResponse != nil {
+		if err := options.RuntimeResponse.Validate(); err != nil {
+			return RunResult{}, WrapExit(ExitCodeInput, err)
+		}
+	}
+	if options.LintRequestSpec != nil {
+		if err := validateLintRequestSpec(options.LintRequestSpec); err != nil {
+			return RunResult{}, WrapExit(ExitCodeInput, err)
+		}
+	}
+	if options.LintRequestSpec != nil && options.RuntimeResponse == nil {
+		return RunResult{}, WrapExit(ExitCodeInput, errors.New("runtime response snapshot is required when lint request spec is provided"))
+	}
+
+	runtimeDriftCheck, err := evaluateRuntimeResponseShapeDrift(
+		state.Snapshots.SchemaPack,
+		options.RuntimeResponse,
+		options.LintRequestSpec,
+		options.LintRequestSpecFile,
+	)
+	if err != nil {
+		return RunResult{}, WrapExit(ExitCodeState, err)
+	}
+	report.Checks = append(report.Checks, runtimeDriftCheck)
 	report.Summary = summarizeChecks(report.Checks)
 
 	return RunResult{

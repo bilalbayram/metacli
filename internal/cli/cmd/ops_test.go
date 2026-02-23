@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bilalbayram/metacli/internal/ops"
@@ -121,8 +122,8 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", data.Report.Kind)
 	}
-	if len(data.Report.Checks) != 4 {
-		t.Fatalf("expected four checks, got %d", len(data.Report.Checks))
+	if len(data.Report.Checks) != 5 {
+		t.Fatalf("expected five checks, got %d", len(data.Report.Checks))
 	}
 	if data.Report.Checks[0].Name != "changelog_occ_delta" {
 		t.Fatalf("unexpected first check name: %s", data.Report.Checks[0].Name)
@@ -136,6 +137,9 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	if data.Report.Checks[3].Name != "permission_policy_preflight" {
 		t.Fatalf("unexpected fourth check name: %s", data.Report.Checks[3].Name)
 	}
+	if data.Report.Checks[4].Name != "runtime_response_shape_drift" {
+		t.Fatalf("unexpected fifth check name: %s", data.Report.Checks[4].Name)
+	}
 	for _, check := range data.Report.Checks {
 		if check.Status != ops.CheckStatusPass {
 			t.Fatalf("unexpected check status: %s", check.Status)
@@ -144,7 +148,7 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 			t.Fatal("expected non-blocking checks")
 		}
 	}
-	if data.Report.Summary.Total != 4 || data.Report.Summary.Passed != 4 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+	if data.Report.Summary.Total != 5 || data.Report.Summary.Passed != 5 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
 	}
 }
@@ -302,6 +306,150 @@ func TestOpsRunCommandReturnsPolicyExitOnRateLimitThreshold(t *testing.T) {
 	}
 	if data.Report.Checks[2].Status != ops.CheckStatusFail {
 		t.Fatalf("unexpected rate limit check status: %s", data.Report.Checks[2].Status)
+	}
+}
+
+func TestOpsRunCommandReturnsPolicyExitOnRuntimeResponseShapeDrift(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	runtimeSnapshotPath := filepath.Join(t.TempDir(), "runtime-snapshot.json")
+	runtimeSnapshot := "{\n  \"method\": \"GET\",\n  \"path\": \"/act_1/campaigns\",\n  \"observed_fields\": [\"id\", \"unknown_runtime_field\"]\n}\n"
+	if err := os.WriteFile(runtimeSnapshotPath, []byte(runtimeSnapshot), 0o600); err != nil {
+		t.Fatalf("write runtime snapshot fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
+	if err == nil {
+		t.Fatal("expected runtime shape drift ops run to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected blocking summary: %+v", data.Report.Summary)
+	}
+	if data.Report.Checks[4].Name != "runtime_response_shape_drift" {
+		t.Fatalf("unexpected runtime drift check name: %s", data.Report.Checks[4].Name)
+	}
+	if data.Report.Checks[4].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected runtime drift check status: %s", data.Report.Checks[4].Status)
+	}
+}
+
+func TestOpsRunCommandReturnsInputExitWhenLintRequestProvidedWithoutRuntimeSnapshot(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	lintRequestPath := filepath.Join(t.TempDir(), "request-spec.json")
+	lintRequest := "{\n  \"method\": \"GET\",\n  \"path\": \"/act_1/campaigns\",\n  \"fields\": [\"id\", \"name\"]\n}\n"
+	if err := os.WriteFile(lintRequestPath, []byte(lintRequest), 0o600); err != nil {
+		t.Fatalf("write lint request fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--lint-request-file", lintRequestPath)
+	if err == nil {
+		t.Fatal("expected ops run to fail when lint request spec is provided without runtime snapshot")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodeInput {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodeInput)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stderr))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodeInput {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodeInput)
+	}
+}
+
+func TestOpsRunCommandLinksLintRequestSpecForRuntimeShapeDriftCheck(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	runtimeSnapshotPath := filepath.Join(t.TempDir(), "runtime-snapshot.json")
+	runtimeSnapshot := "{\n  \"method\": \"GET\",\n  \"path\": \"/act_1/campaigns\",\n  \"observed_fields\": [\"id\", \"name\"]\n}\n"
+	if err := os.WriteFile(runtimeSnapshotPath, []byte(runtimeSnapshot), 0o600); err != nil {
+		t.Fatalf("write runtime snapshot fixture: %v", err)
+	}
+
+	lintRequestPath := filepath.Join(t.TempDir(), "request-spec.json")
+	lintRequest := "{\n  \"method\": \"GET\",\n  \"path\": \"/act_1/campaigns\",\n  \"fields\": [\"id\", \"name\"]\n}\n"
+	if err := os.WriteFile(lintRequestPath, []byte(lintRequest), 0o600); err != nil {
+		t.Fatalf("write lint request fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(
+		Runtime{},
+		"run",
+		"--state-path", statePath,
+		"--runtime-response-file", runtimeSnapshotPath,
+		"--lint-request-file", lintRequestPath,
+	)
+	if err != nil {
+		t.Fatalf("execute ops run: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if !envelope.Success {
+		t.Fatal("expected success=true")
+	}
+	if envelope.ExitCode != ops.ExitCodeSuccess {
+		t.Fatalf("unexpected exit code: %d", envelope.ExitCode)
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Checks[4].Name != "runtime_response_shape_drift" {
+		t.Fatalf("unexpected runtime drift check name: %s", data.Report.Checks[4].Name)
+	}
+	if data.Report.Checks[4].Status != ops.CheckStatusPass {
+		t.Fatalf("unexpected runtime drift check status: %s", data.Report.Checks[4].Status)
+	}
+	if !strings.Contains(data.Report.Checks[4].Message, "lint_request_spec="+lintRequestPath) {
+		t.Fatalf("expected lint request reference in runtime drift message, got %q", data.Report.Checks[4].Message)
 	}
 }
 

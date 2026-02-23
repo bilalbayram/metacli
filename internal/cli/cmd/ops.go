@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/config"
+	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/spf13/cobra"
 )
@@ -62,6 +63,8 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	var statePath string
 	var rateTelemetryPath string
 	var preflightConfigPath string
+	var runtimeResponsePath string
+	var lintRequestPath string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -83,6 +86,21 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
 				}
 				runOptions.RateLimitTelemetry = &snapshot
+			}
+			if strings.TrimSpace(runtimeResponsePath) != "" {
+				snapshot, err := loadRuntimeResponseShapeSnapshot(runtimeResponsePath)
+				if err != nil {
+					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+				}
+				runOptions.RuntimeResponse = &snapshot
+			}
+			if strings.TrimSpace(lintRequestPath) != "" {
+				spec, err := lint.LoadRequestSpec(lintRequestPath)
+				if err != nil {
+					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+				}
+				runOptions.LintRequestSpec = spec
+				runOptions.LintRequestSpecFile = lintRequestPath
 			}
 			preflightSnapshot := buildPermissionPreflightSnapshot(runtime.ProfileName(), preflightConfigPath)
 			runOptions.PermissionPreflight = &preflightSnapshot
@@ -113,6 +131,8 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&statePath, "state-path", "", "Path to baseline state JSON file")
 	cmd.Flags().StringVar(&rateTelemetryPath, "rate-telemetry-file", "", "Path to rate-limit telemetry JSON snapshot file")
 	cmd.Flags().StringVar(&preflightConfigPath, "preflight-config-path", "", "Path to auth config file used for permission preflight")
+	cmd.Flags().StringVar(&runtimeResponsePath, "runtime-response-file", "", "Path to runtime response shape snapshot JSON file")
+	cmd.Flags().StringVar(&lintRequestPath, "lint-request-file", "", "Path to lint request spec JSON file linked to runtime drift check")
 	return cmd
 }
 
@@ -174,6 +194,37 @@ func loadRateLimitTelemetrySnapshot(path string) (ops.RateLimitTelemetrySnapshot
 		}
 		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: %w", path, err)
 	}
+	return snapshot, nil
+}
+
+func loadRuntimeResponseShapeSnapshot(path string) (ops.RuntimeResponseShapeSnapshot, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ops.RuntimeResponseShapeSnapshot{}, errors.New("runtime response snapshot file path is required")
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ops.RuntimeResponseShapeSnapshot{}, fmt.Errorf("read runtime response snapshot file %s: %w", path, err)
+	}
+
+	var snapshot ops.RuntimeResponseShapeSnapshot
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
+		return ops.RuntimeResponseShapeSnapshot{}, fmt.Errorf("decode runtime response snapshot file %s: %w", path, err)
+	}
+	var trailing struct{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return ops.RuntimeResponseShapeSnapshot{}, fmt.Errorf("decode runtime response snapshot file %s: multiple JSON values", path)
+		}
+		return ops.RuntimeResponseShapeSnapshot{}, fmt.Errorf("decode runtime response snapshot file %s: %w", path, err)
+	}
+	if err := snapshot.Validate(); err != nil {
+		return ops.RuntimeResponseShapeSnapshot{}, fmt.Errorf("validate runtime response snapshot file %s: %w", path, err)
+	}
+
 	return snapshot, nil
 }
 

@@ -47,7 +47,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewInsightsCommand(runtime))
 	cmd.AddCommand(command.NewLintCommand(runtime))
 	cmd.AddCommand(command.NewSchemaCommand(runtime))
-	cmd.AddCommand(command.NewPlaceholderGroup("changelog"))
+	cmd.AddCommand(command.NewChangelogCommand(runtime))
 
 	return cmd
 }

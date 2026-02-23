@@ -2,6 +2,8 @@ package ops
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +15,12 @@ import (
 
 	"github.com/bilalbayram/metacli/internal/changelog"
 	"github.com/bilalbayram/metacli/internal/config"
+	"github.com/bilalbayram/metacli/internal/schema"
 )
 
 const (
 	StateSchemaVersion = 1
-	BaselineVersion    = 2
+	BaselineVersion    = 3
 )
 
 const baselineStatusInitialized = "initialized"
@@ -37,6 +40,7 @@ type BaselineState struct {
 
 type Snapshots struct {
 	ChangelogOCC ChangelogOCCSnapshot `json:"changelog_occ"`
+	SchemaPack   SchemaPackSnapshot   `json:"schema_pack"`
 }
 
 type ChangelogOCCSnapshot struct {
@@ -44,8 +48,18 @@ type ChangelogOCCSnapshot struct {
 	OCCDigest     string `json:"occ_digest"`
 }
 
+type SchemaPackSnapshot struct {
+	Domain  string `json:"domain"`
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
 func NewBaselineState() (BaselineState, error) {
-	snapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
+	changelogSnapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
+	if err != nil {
+		return BaselineState{}, err
+	}
+	schemaPackSnapshot, err := captureSchemaPackSnapshot()
 	if err != nil {
 		return BaselineState{}, err
 	}
@@ -54,7 +68,8 @@ func NewBaselineState() (BaselineState, error) {
 		BaselineVersion: BaselineVersion,
 		Status:          baselineStatusInitialized,
 		Snapshots: Snapshots{
-			ChangelogOCC: snapshot,
+			ChangelogOCC: changelogSnapshot,
+			SchemaPack:   schemaPackSnapshot,
 		},
 	}, nil
 }
@@ -184,6 +199,9 @@ func (s Snapshots) Validate() error {
 	if err := s.ChangelogOCC.Validate(); err != nil {
 		return err
 	}
+	if err := s.SchemaPack.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -193,6 +211,19 @@ func (s ChangelogOCCSnapshot) Validate() error {
 	}
 	if strings.TrimSpace(s.OCCDigest) == "" {
 		return errors.New("baseline changelog_occ.occ_digest is required")
+	}
+	return nil
+}
+
+func (s SchemaPackSnapshot) Validate() error {
+	if strings.TrimSpace(s.Domain) == "" {
+		return errors.New("baseline schema_pack.domain is required")
+	}
+	if strings.TrimSpace(s.Version) == "" {
+		return errors.New("baseline schema_pack.version is required")
+	}
+	if strings.TrimSpace(s.SHA256) == "" {
+		return errors.New("baseline schema_pack.sha256 is required")
 	}
 	return nil
 }
@@ -207,6 +238,46 @@ func captureChangelogOCCSnapshot(now time.Time) (ChangelogOCCSnapshot, error) {
 		LatestVersion: result.LatestVersion,
 		OCCDigest:     occSnapshotDigest,
 	}, nil
+}
+
+func captureSchemaPackSnapshot() (SchemaPackSnapshot, error) {
+	path, err := resolveSchemaPackSnapshotSource(config.DefaultDomain, config.DefaultGraphVersion)
+	if err != nil {
+		return SchemaPackSnapshot{}, err
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return SchemaPackSnapshot{}, fmt.Errorf("read schema pack snapshot source %s: %w", path, err)
+	}
+	sum := sha256.Sum256(body)
+	return SchemaPackSnapshot{
+		Domain:  config.DefaultDomain,
+		Version: config.DefaultGraphVersion,
+		SHA256:  hex.EncodeToString(sum[:]),
+	}, nil
+}
+
+func resolveSchemaPackSnapshotSource(domain string, version string) (string, error) {
+	relative := filepath.Join(schema.DefaultSchemaDir, domain, version+".json")
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory for schema pack snapshot source: %w", err)
+	}
+
+	current := wd
+	for {
+		candidate := filepath.Join(current, relative)
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", fmt.Errorf("schema pack snapshot source not found for %s/%s at %s", domain, version, relative)
 }
 
 func marshalState(state BaselineState) ([]byte, error) {

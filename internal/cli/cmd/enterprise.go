@@ -17,6 +17,7 @@ func NewEnterpriseCommand(runtime Runtime) *cobra.Command {
 	}
 	enterpriseCmd.AddCommand(newEnterpriseContextCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseAuthzCommand(runtime))
+	enterpriseCmd.AddCommand(newEnterpriseExecuteCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterpriseApprovalCommand(runtime))
 	enterpriseCmd.AddCommand(newEnterprisePolicyCommand(runtime))
 	return enterpriseCmd
@@ -95,6 +96,88 @@ func newEnterpriseAuthzCommand(runtime Runtime) *cobra.Command {
 	}
 	authzCmd.AddCommand(newEnterpriseAuthzCheckCommand(runtime))
 	return authzCmd
+}
+
+func newEnterpriseExecuteCommand(runtime Runtime) *cobra.Command {
+	var (
+		configPath      string
+		principal       string
+		commandRef      string
+		orgName         string
+		workspace       string
+		approvalToken   string
+		correlationID   string
+		requiredSecrets []string
+		simulateFailure string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "execute",
+		Short: "Execute command through fail-closed enterprise governance pipeline",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedOrg, resolvedWorkspace, err := resolveWorkspaceSelection(orgName, workspace)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				configPath, err = enterprise.DefaultPath()
+				if err != nil {
+					return err
+				}
+			}
+
+			cfg, err := enterprise.Load(configPath)
+			if err != nil {
+				return err
+			}
+
+			secretRequirements, err := parseEnterpriseRequiredSecrets(requiredSecrets)
+			if err != nil {
+				return err
+			}
+
+			trace, err := cfg.ExecuteCommand(enterprise.CommandExecutionRequest{
+				Principal:       principal,
+				Command:         commandRef,
+				OrgName:         resolvedOrg,
+				WorkspaceName:   resolvedWorkspace,
+				ApprovalToken:   approvalToken,
+				CorrelationID:   correlationID,
+				RequiredSecrets: secretRequirements,
+				AuditPipeline:   enterprise.NewAuditPipeline(),
+				Execute: func(enterprise.CommandExecutionContext) error {
+					failureReason := strings.TrimSpace(simulateFailure)
+					if failureReason != "" {
+						return errors.New(failureReason)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				return err
+			}
+			return writeSuccess(cmd, runtime, "meta enterprise execute", trace, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to enterprise config file")
+	cmd.Flags().StringVar(&principal, "principal", "", "Principal identity to evaluate and execute")
+	cmd.Flags().StringVar(&commandRef, "command", "", "Command reference to execute (for example \"api get\")")
+	cmd.Flags().StringVar(&orgName, "org", "", "Enterprise org name")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name or org/workspace")
+	cmd.Flags().StringVar(&approvalToken, "approval-token", "", "Approval grant token for high-risk commands")
+	cmd.Flags().StringVar(&correlationID, "correlation-id", "", "Correlation id for immutable decision/execution audit events")
+	cmd.Flags().StringArrayVar(
+		&requiredSecrets,
+		"require-secret",
+		nil,
+		"Required secret in <secret>:<action> format. Repeat flag for multiple requirements.",
+	)
+	cmd.Flags().StringVar(&simulateFailure, "simulate-failure", "", "Force execution callback failure with this message")
+	mustMarkFlagRequired(cmd, "principal")
+	mustMarkFlagRequired(cmd, "command")
+	mustMarkFlagRequired(cmd, "correlation-id")
+	return cmd
 }
 
 func newEnterpriseAuthzCheckCommand(runtime Runtime) *cobra.Command {
@@ -373,6 +456,30 @@ func parseEnterpriseApprovalTTL(raw string) (time.Duration, error) {
 		return 0, errors.New("ttl must be greater than zero")
 	}
 	return ttl, nil
+}
+
+func parseEnterpriseRequiredSecrets(values []string) ([]enterprise.SecretExecutionRequirement, error) {
+	requirements := make([]enterprise.SecretExecutionRequirement, 0, len(values))
+	for index, value := range values {
+		raw := strings.TrimSpace(value)
+		if raw == "" {
+			return nil, fmt.Errorf("require-secret[%d] is empty; expected <secret>:<action>", index)
+		}
+		secretName, action, ok := strings.Cut(raw, ":")
+		if !ok {
+			return nil, fmt.Errorf("invalid --require-secret value %q; expected <secret>:<action>", value)
+		}
+		secretName = strings.TrimSpace(secretName)
+		action = strings.TrimSpace(action)
+		if secretName == "" || action == "" {
+			return nil, fmt.Errorf("invalid --require-secret value %q; expected <secret>:<action>", value)
+		}
+		requirements = append(requirements, enterprise.SecretExecutionRequirement{
+			Secret: secretName,
+			Action: action,
+		})
+	}
+	return requirements, nil
 }
 
 func newEnterprisePolicyCommand(runtime Runtime) *cobra.Command {

@@ -713,6 +713,210 @@ bindings:
 	}
 }
 
+func TestEnterpriseExecuteRunsFullPipeline(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+secret_governance:
+  secrets:
+    graph_read_token:
+      scope:
+        org: acme
+        workspace: prod
+      ownership:
+        owner_principal: security.owner
+  policies:
+    - principal: alice
+      secret: graph_read_token
+      actions:
+        - read
+      org: acme
+      workspace: prod
+`)
+
+	cmd := newEnterpriseExecuteCommand(Runtime{})
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "api get",
+		"--workspace", "acme/prod",
+		"--correlation-id", "corr-exec-cli-001",
+		"--require-secret", "graph_read_token:read",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Authorization struct {
+				Allowed bool `json:"allowed"`
+			} `json:"authorization"`
+			SecretAccess []struct {
+				Allowed bool `json:"allowed"`
+			} `json:"secret_access"`
+			Execution struct {
+				Status string `json:"status"`
+			} `json:"execution"`
+			AuditEvents []struct {
+				EventType       string `json:"event_type"`
+				ExecutionStatus string `json:"execution_status"`
+			} `json:"audit_events"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if !envelope.Success {
+		t.Fatal("expected success output")
+	}
+	if !envelope.Data.Authorization.Allowed {
+		t.Fatal("expected authorization allow")
+	}
+	if len(envelope.Data.SecretAccess) != 1 {
+		t.Fatalf("unexpected secret access trace count: %d", len(envelope.Data.SecretAccess))
+	}
+	if !envelope.Data.SecretAccess[0].Allowed {
+		t.Fatal("expected secret access allow")
+	}
+	if envelope.Data.Execution.Status != enterprise.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected execution status: %q", envelope.Data.Execution.Status)
+	}
+	if len(envelope.Data.AuditEvents) != 2 {
+		t.Fatalf("unexpected audit event count: %d", len(envelope.Data.AuditEvents))
+	}
+	if envelope.Data.AuditEvents[0].EventType != enterprise.AuditEventTypeDecision {
+		t.Fatalf("unexpected first event type: %q", envelope.Data.AuditEvents[0].EventType)
+	}
+	if envelope.Data.AuditEvents[1].EventType != enterprise.AuditEventTypeExecution {
+		t.Fatalf("unexpected second event type: %q", envelope.Data.AuditEvents[1].EventType)
+	}
+	if envelope.Data.AuditEvents[1].ExecutionStatus != enterprise.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected execution event status: %q", envelope.Data.AuditEvents[1].ExecutionStatus)
+	}
+}
+
+func TestEnterpriseExecuteFailsClosedWhenSecretAccessDenied(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+secret_governance:
+  secrets:
+    graph_read_token:
+      scope:
+        org: acme
+        workspace: prod
+      ownership:
+        owner_principal: security.owner
+`)
+
+	cmd := newEnterpriseExecuteCommand(Runtime{})
+	cmd.SetOut(bytes.NewBuffer(nil))
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "api get",
+		"--workspace", "acme/prod",
+		"--correlation-id", "corr-exec-cli-002",
+		"--require-secret", "graph_read_token:read",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command to fail for denied secret access")
+	}
+	if !strings.Contains(err.Error(), "authorization denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnterpriseExecuteFailsWhenRequiredSecretFormatInvalid(t *testing.T) {
+	t.Parallel()
+
+	configPath := writeEnterpriseConfig(t, `
+schema_version: 1
+default_org: acme
+orgs:
+  acme:
+    id: org_1
+    default_workspace: prod
+    workspaces:
+      prod:
+        id: ws_1
+roles:
+  reader:
+    capabilities:
+      - graph.read
+bindings:
+  - principal: alice
+    role: reader
+    org: acme
+    workspace: prod
+`)
+
+	cmd := newEnterpriseExecuteCommand(Runtime{})
+	cmd.SetOut(bytes.NewBuffer(nil))
+	cmd.SetErr(bytes.NewBuffer(nil))
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--principal", "alice",
+		"--command", "api get",
+		"--workspace", "acme/prod",
+		"--correlation-id", "corr-exec-cli-003",
+		"--require-secret", "missing-action",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command to fail when required secret format is invalid")
+	}
+	if !strings.Contains(err.Error(), "invalid --require-secret value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func writeEnterpriseConfig(t *testing.T, content string) string {
 	t.Helper()
 

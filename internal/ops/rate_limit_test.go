@@ -18,7 +18,7 @@ func TestEvaluateRateLimitThresholdPassesWhenUnderThreshold(t *testing.T) {
 		AdAccountUtilPct: 25,
 	}
 
-	check := evaluateRateLimitThreshold(snapshot, DefaultRateLimitThreshold)
+	check := evaluateRateLimitThreshold(snapshot, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold)
 	if check.Name != checkNameRateLimitThreshold {
 		t.Fatalf("unexpected check name: %s", check.Name)
 	}
@@ -43,12 +43,34 @@ func TestEvaluateRateLimitThresholdFailsWhenAtThreshold(t *testing.T) {
 		AdAccountUtilPct: 2,
 	}
 
-	check := evaluateRateLimitThreshold(snapshot, DefaultRateLimitThreshold)
+	check := evaluateRateLimitThreshold(snapshot, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold)
 	if check.Status != CheckStatusFail {
 		t.Fatalf("unexpected status: got=%s want=%s", check.Status, CheckStatusFail)
 	}
 	if !check.Blocking {
 		t.Fatal("expected blocking check when threshold is reached")
+	}
+}
+
+func TestEvaluateRateLimitThresholdWarnsWhenAtWarningThreshold(t *testing.T) {
+	t.Parallel()
+
+	snapshot := RateLimitTelemetrySnapshot{
+		AppCallCount:     DefaultRateLimitWarningThreshold,
+		AppTotalCPUTime:  10,
+		AppTotalTime:     5,
+		PageCallCount:    1,
+		PageTotalCPUTime: 1,
+		PageTotalTime:    1,
+		AdAccountUtilPct: 2,
+	}
+
+	check := evaluateRateLimitThreshold(snapshot, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold)
+	if check.Status != CheckStatusFail {
+		t.Fatalf("unexpected status: got=%s want=%s", check.Status, CheckStatusFail)
+	}
+	if check.Blocking {
+		t.Fatal("expected non-blocking warning check at warning threshold")
 	}
 }
 

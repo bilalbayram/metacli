@@ -55,6 +55,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewCAPICommand(runtime))
 	cmd.AddCommand(command.NewOpsCommand(runtime))
 	cmd.AddCommand(command.NewEnterpriseCommand(runtime))
+	cmd.AddCommand(command.NewCampaignCommand(runtime))
 
 	return cmd
 }

@@ -8,9 +8,11 @@ import (
 const (
 	ExitCodeSuccess = 0
 	ExitCodeUnknown = 1
+	ExitCodeRuntime = ExitCodeUnknown
 	ExitCodeState   = 2
 	ExitCodeInput   = 4
 	ExitCodePolicy  = 8
+	ExitCodeWarning = 16
 )
 
 type ExitError struct {

@@ -51,8 +51,35 @@ func TestRunReturnsReportWithChangelogOCCCheck(t *testing.T) {
 			t.Fatal("expected non-blocking status for unchanged snapshots")
 		}
 	}
-	if result.Report.Summary.Total != 5 || result.Report.Summary.Passed != 5 || result.Report.Summary.Failed != 0 || result.Report.Summary.Blocking != 0 {
+	if result.Report.Summary.Total != 5 || result.Report.Summary.Passed != 5 || result.Report.Summary.Failed != 0 || result.Report.Summary.Warnings != 0 || result.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary counts: %+v", result.Report.Summary)
+	}
+	if result.Report.Outcome != RunOutcomeClean {
+		t.Fatalf("unexpected report outcome: %s", result.Report.Outcome)
+	}
+	if len(result.Report.Sections) != 4 {
+		t.Fatalf("expected four report sections, got %d", len(result.Report.Sections))
+	}
+	if result.Report.Sections[0].Name != reportSectionMonitor {
+		t.Fatalf("unexpected first section name: %s", result.Report.Sections[0].Name)
+	}
+	if result.Report.Sections[1].Name != reportSectionDrift {
+		t.Fatalf("unexpected second section name: %s", result.Report.Sections[1].Name)
+	}
+	if result.Report.Sections[2].Name != reportSectionRateLimit {
+		t.Fatalf("unexpected third section name: %s", result.Report.Sections[2].Name)
+	}
+	if result.Report.Sections[3].Name != reportSectionPreflight {
+		t.Fatalf("unexpected fourth section name: %s", result.Report.Sections[3].Name)
+	}
+	if len(result.Report.Sections[1].Checks) != 2 {
+		t.Fatalf("expected drift section to contain two checks, got %d", len(result.Report.Sections[1].Checks))
+	}
+	if result.Report.Sections[1].Checks[0].Name != checkNameSchemaPackDrift {
+		t.Fatalf("unexpected first drift check name: %s", result.Report.Sections[1].Checks[0].Name)
+	}
+	if result.Report.Sections[1].Checks[1].Name != checkNameRuntimeResponseShapeDrift {
+		t.Fatalf("unexpected second drift check name: %s", result.Report.Sections[1].Checks[1].Name)
 	}
 }
 
@@ -81,5 +108,16 @@ func TestRunExitCodeUsesPolicyCodeForBlockingFindings(t *testing.T) {
 	}
 	if code := RunExitCode(report); code != ExitCodePolicy {
 		t.Fatalf("unexpected run exit code: got=%d want=%d", code, ExitCodePolicy)
+	}
+}
+
+func TestRunExitCodeUsesWarningCodeForWarningFindings(t *testing.T) {
+	t.Parallel()
+
+	report := Report{
+		Summary: Summary{Warnings: 1},
+	}
+	if code := RunExitCode(report); code != ExitCodeWarning {
+		t.Fatalf("unexpected run exit code: got=%d want=%d", code, ExitCodeWarning)
 	}
 }

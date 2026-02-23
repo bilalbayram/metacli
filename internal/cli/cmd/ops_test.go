@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"os"
@@ -24,6 +25,14 @@ type envelopeFixture struct {
 type errorFixture struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+type runSectionLineFixture struct {
+	StatePath           string            `json:"state_path"`
+	ReportSchemaVersion int               `json:"report_schema_version"`
+	ReportKind          string            `json:"report_kind"`
+	ReportOutcome       string            `json:"report_outcome"`
+	Section             ops.ReportSection `json:"section"`
 }
 
 func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
@@ -148,8 +157,26 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 			t.Fatal("expected non-blocking checks")
 		}
 	}
-	if data.Report.Summary.Total != 5 || data.Report.Summary.Passed != 5 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+	if data.Report.Summary.Total != 5 || data.Report.Summary.Passed != 5 || data.Report.Summary.Failed != 0 || data.Report.Summary.Warnings != 0 || data.Report.Summary.Blocking != 0 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
+	}
+	if data.Report.Outcome != ops.RunOutcomeClean {
+		t.Fatalf("unexpected report outcome: %s", data.Report.Outcome)
+	}
+	if len(data.Report.Sections) != 4 {
+		t.Fatalf("expected four sections, got %d", len(data.Report.Sections))
+	}
+	if data.Report.Sections[0].Name != "monitor" {
+		t.Fatalf("unexpected first section name: %s", data.Report.Sections[0].Name)
+	}
+	if data.Report.Sections[1].Name != "drift" {
+		t.Fatalf("unexpected second section name: %s", data.Report.Sections[1].Name)
+	}
+	if data.Report.Sections[2].Name != "rate_limit" {
+		t.Fatalf("unexpected third section name: %s", data.Report.Sections[2].Name)
+	}
+	if data.Report.Sections[3].Name != "preflight" {
+		t.Fatalf("unexpected fourth section name: %s", data.Report.Sections[3].Name)
 	}
 }
 
@@ -309,6 +336,179 @@ func TestOpsRunCommandReturnsPolicyExitOnRateLimitThreshold(t *testing.T) {
 	}
 }
 
+func TestOpsRunCommandReturnsWarningExitOnRateLimitWarningThreshold(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	telemetryPath := filepath.Join(t.TempDir(), "telemetry-warning.json")
+	telemetry := "{\n  \"app_call_count\": 65,\n  \"app_total_cputime\": 20,\n  \"app_total_time\": 10,\n  \"page_call_count\": 10,\n  \"page_total_cputime\": 5,\n  \"page_total_time\": 3,\n  \"ad_account_util_pct\": 2\n}\n"
+	if err := os.WriteFile(telemetryPath, []byte(telemetry), 0o600); err != nil {
+		t.Fatalf("write telemetry fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	if err == nil {
+		t.Fatal("expected rate-limit warning ops run to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodeWarning {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodeWarning)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodeWarning {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodeWarning)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "warning_findings" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Summary.Warnings != 1 || data.Report.Summary.Blocking != 0 {
+		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
+	}
+	if data.Report.Outcome != ops.RunOutcomeWarning {
+		t.Fatalf("unexpected report outcome: %s", data.Report.Outcome)
+	}
+}
+
+func TestOpsRunCommandWritesDeterministicJSONLSections(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("jsonl"), "run", "--state-path", statePath)
+	if err != nil {
+		t.Fatalf("execute ops run: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected four jsonl lines, got %d", len(lines))
+	}
+
+	expectedSections := []string{"monitor", "drift", "rate_limit", "preflight"}
+	for index, line := range lines {
+		envelope := decodeOpsEnvelope(t, []byte(line))
+		if envelope.Command != ops.CommandRun {
+			t.Fatalf("unexpected command: %s", envelope.Command)
+		}
+		if !envelope.Success {
+			t.Fatal("expected success=true")
+		}
+		if envelope.ExitCode != ops.ExitCodeSuccess {
+			t.Fatalf("unexpected envelope exit code: %d", envelope.ExitCode)
+		}
+
+		var sectionData runSectionLineFixture
+		if err := json.Unmarshal(envelope.Data, &sectionData); err != nil {
+			t.Fatalf("decode jsonl section data: %v", err)
+		}
+		if sectionData.StatePath != statePath {
+			t.Fatalf("unexpected state path: got=%s want=%s", sectionData.StatePath, statePath)
+		}
+		if sectionData.ReportOutcome != ops.RunOutcomeClean {
+			t.Fatalf("unexpected report outcome: %s", sectionData.ReportOutcome)
+		}
+		if sectionData.Section.Name != expectedSections[index] {
+			t.Fatalf("unexpected section order at index %d: %s", index, sectionData.Section.Name)
+		}
+	}
+}
+
+func TestOpsRunCommandWritesDeterministicCSVSections(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("csv"), "run", "--state-path", statePath)
+	if err != nil {
+		t.Fatalf("execute ops run: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	reader := csv.NewReader(strings.NewReader(stdout))
+	records, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv output: %v", err)
+	}
+	if len(records) != 6 {
+		t.Fatalf("expected 6 csv rows (header + 5 checks), got %d", len(records))
+	}
+
+	expectedHeader := []string{
+		"state_path",
+		"report_outcome",
+		"section",
+		"section_outcome",
+		"section_total",
+		"section_passed",
+		"section_failed",
+		"section_warnings",
+		"section_blocking",
+		"check_name",
+		"check_status",
+		"check_blocking",
+		"check_message",
+	}
+	if strings.Join(records[0], ",") != strings.Join(expectedHeader, ",") {
+		t.Fatalf("unexpected csv header: %v", records[0])
+	}
+
+	expectedSectionAndChecks := [][2]string{
+		{"monitor", "changelog_occ_delta"},
+		{"drift", "schema_pack_drift"},
+		{"drift", "runtime_response_shape_drift"},
+		{"rate_limit", "rate_limit_threshold"},
+		{"preflight", "permission_policy_preflight"},
+	}
+	for index, expected := range expectedSectionAndChecks {
+		row := records[index+1]
+		if row[0] != statePath {
+			t.Fatalf("unexpected state path in row %d: %s", index+1, row[0])
+		}
+		if row[1] != ops.RunOutcomeClean {
+			t.Fatalf("unexpected report outcome in row %d: %s", index+1, row[1])
+		}
+		if row[2] != expected[0] {
+			t.Fatalf("unexpected section name in row %d: %s", index+1, row[2])
+		}
+		if row[9] != expected[1] {
+			t.Fatalf("unexpected check name in row %d: %s", index+1, row[9])
+		}
+	}
+}
+
 func TestOpsRunCommandReturnsPolicyExitOnRuntimeResponseShapeDrift(t *testing.T) {
 	t.Parallel()
 
@@ -355,6 +555,59 @@ func TestOpsRunCommandReturnsPolicyExitOnRuntimeResponseShapeDrift(t *testing.T)
 	}
 	if data.Report.Checks[4].Status != ops.CheckStatusFail {
 		t.Fatalf("unexpected runtime drift check status: %s", data.Report.Checks[4].Status)
+	}
+}
+
+func TestOpsRunCommandReturnsRuntimeExitOnRuntimeEvaluationError(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	state, err := ops.LoadBaseline(statePath)
+	if err != nil {
+		t.Fatalf("load baseline state: %v", err)
+	}
+	state.Snapshots.SchemaPack.Domain = "missing-domain"
+	if err := ops.SaveBaseline(statePath, state); err != nil {
+		t.Fatalf("save baseline state: %v", err)
+	}
+
+	runtimeSnapshotPath := filepath.Join(t.TempDir(), "runtime-snapshot.json")
+	runtimeSnapshot := "{\n  \"method\": \"GET\",\n  \"path\": \"/act_1/campaigns\",\n  \"observed_fields\": [\"id\"]\n}\n"
+	if err := os.WriteFile(runtimeSnapshotPath, []byte(runtimeSnapshot), 0o600); err != nil {
+		t.Fatalf("write runtime snapshot fixture: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
+	if err == nil {
+		t.Fatal("expected runtime evaluation failure")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodeRuntime {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodeRuntime)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stderr))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodeRuntime {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodeRuntime)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "runtime_error" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
 	}
 }
 
@@ -649,5 +902,13 @@ func runtimeWithProfile(profile string) Runtime {
 		Profile: &profile,
 		Output:  &output,
 		Debug:   &debug,
+	}
+}
+
+func runtimeWithOutput(format string) Runtime {
+	debug := false
+	return Runtime{
+		Output: &format,
+		Debug:  &debug,
 	}
 }

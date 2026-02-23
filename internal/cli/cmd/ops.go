@@ -34,23 +34,23 @@ func newOpsInitCommand(runtime Runtime) *cobra.Command {
 		Use:   "init",
 		Short: "Initialize baseline operations state",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := ensureOpsOutput(runtime); err != nil {
-				return writeOpsError(cmd, ops.CommandInit, ops.WrapExit(ops.ExitCodeInput, err))
+			if err := ensureOpsOutput(runtime, ops.CommandInit); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandInit, ops.WrapExit(ops.ExitCodeInput, err))
 			}
 
 			resolvedPath, err := resolveStatePath(statePath)
 			if err != nil {
-				return writeOpsError(cmd, ops.CommandInit, ops.WrapExit(ops.ExitCodeState, err))
+				return writeOpsError(cmd, runtime, ops.CommandInit, ops.WrapExit(ops.ExitCodeState, err))
 			}
 
 			result, err := ops.Initialize(resolvedPath)
 			if err != nil {
-				return writeOpsError(cmd, ops.CommandInit, err)
+				return writeOpsError(cmd, runtime, ops.CommandInit, err)
 			}
 
 			envelope := ops.NewSuccessEnvelope(ops.CommandInit, result)
-			if err := ops.WriteEnvelope(cmd.OutOrStdout(), envelope); err != nil {
-				return writeOpsError(cmd, ops.CommandInit, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
+			if err := ops.WriteEnvelope(cmd.OutOrStdout(), opsEnvelopeOutputFormat(runtime), envelope); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandInit, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
 			}
 			return nil
 		},
@@ -70,34 +70,34 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 		Use:   "run",
 		Short: "Run operations report skeleton against baseline state",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := ensureOpsOutput(runtime); err != nil {
-				return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+			if err := ensureOpsOutput(runtime, ops.CommandRun); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
 			}
 
 			resolvedPath, err := resolveStatePath(statePath)
 			if err != nil {
-				return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeState, err))
+				return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeState, err))
 			}
 
 			runOptions := ops.RunOptions{}
 			if strings.TrimSpace(rateTelemetryPath) != "" {
 				snapshot, err := loadRateLimitTelemetrySnapshot(rateTelemetryPath)
 				if err != nil {
-					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+					return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
 				}
 				runOptions.RateLimitTelemetry = &snapshot
 			}
 			if strings.TrimSpace(runtimeResponsePath) != "" {
 				snapshot, err := loadRuntimeResponseShapeSnapshot(runtimeResponsePath)
 				if err != nil {
-					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+					return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
 				}
 				runOptions.RuntimeResponse = &snapshot
 			}
 			if strings.TrimSpace(lintRequestPath) != "" {
 				spec, err := lint.LoadRequestSpec(lintRequestPath)
 				if err != nil {
-					return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+					return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
 				}
 				runOptions.LintRequestSpec = spec
 				runOptions.LintRequestSpecFile = lintRequestPath
@@ -107,20 +107,33 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 
 			result, err := ops.RunWithOptions(resolvedPath, runOptions)
 			if err != nil {
-				return writeOpsError(cmd, ops.CommandRun, err)
+				return writeOpsError(cmd, runtime, ops.CommandRun, err)
 			}
 
 			envelope := ops.NewSuccessEnvelope(ops.CommandRun, result)
 			if code := ops.RunExitCode(result.Report); code != ops.ExitCodeSuccess {
 				envelope.Success = false
 				envelope.ExitCode = code
-				envelope.Error = &ops.ErrorInfo{
-					Type:    "blocking_findings",
-					Message: fmt.Sprintf("ops run reported %d blocking finding(s)", result.Report.Summary.Blocking),
+				switch ops.RunOutcomeForReport(result.Report) {
+				case ops.RunOutcomeWarning:
+					envelope.Error = &ops.ErrorInfo{
+						Type:    "warning_findings",
+						Message: fmt.Sprintf("ops run reported %d warning finding(s)", result.Report.Summary.Warnings),
+					}
+				case ops.RunOutcomeBlocking:
+					envelope.Error = &ops.ErrorInfo{
+						Type:    "blocking_findings",
+						Message: fmt.Sprintf("ops run reported %d blocking finding(s)", result.Report.Summary.Blocking),
+					}
+				default:
+					envelope.Error = &ops.ErrorInfo{
+						Type:    "runtime_error",
+						Message: "ops run failed with runtime error",
+					}
 				}
 			}
-			if err := ops.WriteEnvelope(cmd.OutOrStdout(), envelope); err != nil {
-				return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
+			if err := ops.WriteEnvelope(cmd.OutOrStdout(), opsEnvelopeOutputFormat(runtime), envelope); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
 			}
 			if !envelope.Success {
 				return ops.WrapExit(envelope.ExitCode, errors.New(envelope.Error.Message))
@@ -136,12 +149,20 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	return cmd
 }
 
-func ensureOpsOutput(runtime Runtime) error {
+func ensureOpsOutput(runtime Runtime, command string) error {
 	format := strings.ToLower(strings.TrimSpace(selectedOutputFormat(runtime)))
-	if format != "json" {
+	switch command {
+	case ops.CommandRun:
+		if format == "json" || format == "jsonl" || format == "csv" {
+			return nil
+		}
+		return fmt.Errorf("meta ops run requires --output json|jsonl|csv, got %q", format)
+	default:
+		if format == "json" {
+			return nil
+		}
 		return fmt.Errorf("ops commands require --output json, got %q", format)
 	}
-	return nil
 }
 
 func resolveStatePath(path string) (string, error) {
@@ -152,14 +173,14 @@ func resolveStatePath(path string) (string, error) {
 	return ops.DefaultStatePath()
 }
 
-func writeOpsError(cmd *cobra.Command, command string, err error) error {
+func writeOpsError(cmd *cobra.Command, runtime Runtime, command string, err error) error {
 	code := ops.ExitCode(err)
 	if code == ops.ExitCodeSuccess {
 		code = ops.ExitCodeUnknown
 	}
 
 	envelope := ops.NewErrorEnvelope(command, code, err)
-	if writeErr := ops.WriteEnvelope(cmd.ErrOrStderr(), envelope); writeErr != nil {
+	if writeErr := ops.WriteEnvelope(cmd.ErrOrStderr(), opsEnvelopeOutputFormat(runtime), envelope); writeErr != nil {
 		return ops.WrapExit(code, fmt.Errorf("%w (secondary output error: %v)", err, writeErr))
 	}
 
@@ -195,6 +216,16 @@ func loadRateLimitTelemetrySnapshot(path string) (ops.RateLimitTelemetrySnapshot
 		return ops.RateLimitTelemetrySnapshot{}, fmt.Errorf("decode rate telemetry file %s: %w", path, err)
 	}
 	return snapshot, nil
+}
+
+func opsEnvelopeOutputFormat(runtime Runtime) string {
+	format := strings.ToLower(strings.TrimSpace(selectedOutputFormat(runtime)))
+	switch format {
+	case "json", "jsonl", "csv":
+		return format
+	default:
+		return "json"
+	}
 }
 
 func loadRuntimeResponseShapeSnapshot(path string) (ops.RuntimeResponseShapeSnapshot, error) {

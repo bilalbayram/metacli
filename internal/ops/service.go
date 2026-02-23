@@ -21,7 +21,37 @@ const (
 	checkNameRuntimeResponseShapeDrift = "runtime_response_shape_drift"
 )
 
-const DefaultRateLimitThreshold = 75
+const (
+	reportSectionMonitor   = "monitor"
+	reportSectionDrift     = "drift"
+	reportSectionRateLimit = "rate_limit"
+	reportSectionPreflight = "preflight"
+	reportSectionOther     = "other"
+)
+
+const (
+	RunOutcomeClean    = "clean"
+	RunOutcomeWarning  = "warning"
+	RunOutcomeBlocking = "blocking"
+	RunOutcomeError    = "error"
+)
+
+const (
+	DefaultRateLimitWarningThreshold = 60
+	DefaultRateLimitThreshold        = 75
+)
+
+type reportSectionDefinition struct {
+	Name      string
+	CheckName []string
+}
+
+var reportSectionDefinitions = []reportSectionDefinition{
+	{Name: reportSectionMonitor, CheckName: []string{checkNameChangelogOCCDelta}},
+	{Name: reportSectionDrift, CheckName: []string{checkNameSchemaPackDrift, checkNameRuntimeResponseShapeDrift}},
+	{Name: reportSectionRateLimit, CheckName: []string{checkNameRateLimitThreshold}},
+	{Name: reportSectionPreflight, CheckName: []string{checkNamePermissionPolicyPreflight}},
+}
 
 type RunOptions struct {
 	RateLimitTelemetry  *RateLimitTelemetrySnapshot
@@ -67,13 +97,13 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 	report := NewReportSkeleton(state)
 	currentSnapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
 	if err != nil {
-		return RunResult{}, WrapExit(ExitCodeState, err)
+		return RunResult{}, WrapExit(ExitCodeRuntime, err)
 	}
 	report.Checks = append(report.Checks, evaluateChangelogOCCDelta(state.Snapshots.ChangelogOCC, currentSnapshot))
 
 	currentSchemaPack, err := captureSchemaPackSnapshot()
 	if err != nil {
-		return RunResult{}, WrapExit(ExitCodeState, err)
+		return RunResult{}, WrapExit(ExitCodeRuntime, err)
 	}
 	report.Checks = append(report.Checks, evaluateSchemaPackDrift(state.Snapshots.SchemaPack, currentSchemaPack))
 
@@ -84,7 +114,7 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		}
 		rateTelemetry = *options.RateLimitTelemetry
 	}
-	report.Checks = append(report.Checks, evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitThreshold))
+	report.Checks = append(report.Checks, evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold))
 
 	preflightSnapshot := PermissionPreflightSnapshot{}
 	if options.PermissionPreflight != nil {
@@ -113,10 +143,12 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		options.LintRequestSpecFile,
 	)
 	if err != nil {
-		return RunResult{}, WrapExit(ExitCodeState, err)
+		return RunResult{}, WrapExit(ExitCodeRuntime, err)
 	}
 	report.Checks = append(report.Checks, runtimeDriftCheck)
 	report.Summary = summarizeChecks(report.Checks)
+	report.Outcome = summarizeOutcome(report.Summary)
+	report.Sections = composeReportSections(report.Checks)
 
 	return RunResult{
 		StatePath: statePath,
@@ -125,10 +157,85 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 }
 
 func RunExitCode(report Report) int {
-	if report.Summary.Blocking > 0 {
+	switch RunOutcomeForReport(report) {
+	case RunOutcomeBlocking:
 		return ExitCodePolicy
+	case RunOutcomeWarning:
+		return ExitCodeWarning
+	case RunOutcomeClean:
+		return ExitCodeSuccess
+	default:
+		return ExitCodeUnknown
 	}
-	return ExitCodeSuccess
+}
+
+func RunOutcomeForReport(report Report) string {
+	if report.Outcome != "" {
+		return report.Outcome
+	}
+	return summarizeOutcome(report.Summary)
+}
+
+func summarizeOutcome(summary Summary) string {
+	if summary.Blocking > 0 {
+		return RunOutcomeBlocking
+	}
+	if summary.Warnings > 0 {
+		return RunOutcomeWarning
+	}
+	return RunOutcomeClean
+}
+
+func composeReportSections(checks []Check) []ReportSection {
+	checkByName := make(map[string]Check, len(checks))
+	for _, check := range checks {
+		if _, exists := checkByName[check.Name]; exists {
+			continue
+		}
+		checkByName[check.Name] = check
+	}
+
+	sections := make([]ReportSection, 0, len(reportSectionDefinitions)+1)
+	assigned := make(map[string]struct{}, len(checkByName))
+
+	for _, definition := range reportSectionDefinitions {
+		sectionChecks := make([]Check, 0, len(definition.CheckName))
+		for _, checkName := range definition.CheckName {
+			check, ok := checkByName[checkName]
+			if !ok {
+				continue
+			}
+			sectionChecks = append(sectionChecks, check)
+			assigned[checkName] = struct{}{}
+		}
+
+		summary := summarizeChecks(sectionChecks)
+		sections = append(sections, ReportSection{
+			Name:    definition.Name,
+			Summary: summary,
+			Outcome: summarizeOutcome(summary),
+			Checks:  sectionChecks,
+		})
+	}
+
+	uncategorized := make([]Check, 0)
+	for _, check := range checks {
+		if _, ok := assigned[check.Name]; ok {
+			continue
+		}
+		uncategorized = append(uncategorized, check)
+	}
+	if len(uncategorized) > 0 {
+		summary := summarizeChecks(uncategorized)
+		sections = append(sections, ReportSection{
+			Name:    reportSectionOther,
+			Summary: summary,
+			Outcome: summarizeOutcome(summary),
+			Checks:  uncategorized,
+		})
+	}
+
+	return sections
 }
 
 func summarizeChecks(checks []Check) Summary {
@@ -143,7 +250,9 @@ func summarizeChecks(checks []Check) Summary {
 		summary.Failed++
 		if check.Blocking {
 			summary.Blocking++
+			continue
 		}
+		summary.Warnings++
 	}
 	return summary
 }
@@ -199,17 +308,39 @@ func evaluateSchemaPackDrift(baseline SchemaPackSnapshot, current SchemaPackSnap
 	return check
 }
 
-func evaluateRateLimitThreshold(snapshot RateLimitTelemetrySnapshot, threshold int) Check {
+func evaluateRateLimitThreshold(snapshot RateLimitTelemetrySnapshot, warningThreshold int, threshold int) Check {
 	check := Check{
 		Name:   checkNameRateLimitThreshold,
 		Status: CheckStatusPass,
 	}
 	metric, value := highestRateLimitMetric(snapshot)
-	check.Message = fmt.Sprintf("rate limit within threshold: max_metric=%s value=%d threshold=%d", metric, value, threshold)
+	check.Message = fmt.Sprintf(
+		"rate limit within thresholds: max_metric=%s value=%d warning_threshold=%d threshold=%d",
+		metric,
+		value,
+		warningThreshold,
+		threshold,
+	)
 	if value >= threshold {
 		check.Status = CheckStatusFail
 		check.Blocking = true
-		check.Message = fmt.Sprintf("rate limit threshold exceeded: metric=%s value=%d threshold=%d", metric, value, threshold)
+		check.Message = fmt.Sprintf(
+			"rate limit threshold exceeded: metric=%s value=%d threshold=%d",
+			metric,
+			value,
+			threshold,
+		)
+		return check
+	}
+	if value >= warningThreshold {
+		check.Status = CheckStatusFail
+		check.Message = fmt.Sprintf(
+			"rate limit warning threshold reached: metric=%s value=%d warning_threshold=%d threshold=%d",
+			metric,
+			value,
+			warningThreshold,
+			threshold,
+		)
 	}
 	return check
 }

@@ -1,0 +1,28 @@
+{
+  "domain": "marketing",
+  "version": "v25.0",
+  "entities": {
+    "campaign": ["id", "name", "status", "objective", "daily_budget", "lifetime_budget"],
+    "adset": ["id", "name", "status", "campaign_id", "billing_event", "optimization_goal"],
+    "ad": ["id", "name", "status", "adset_id", "creative"],
+    "insights": ["date_start", "date_stop", "impressions", "clicks", "spend", "reach", "actions"]
+  },
+  "endpoint_params": {
+    "insights": [
+      "level",
+      "date_preset",
+      "time_range",
+      "breakdowns",
+      "action_breakdowns",
+      "attribution_setting",
+      "action_attribution_windows",
+      "limit",
+      "after",
+      "async"
+    ],
+    "campaigns": ["fields", "effective_status", "limit", "after"]
+  },
+  "deprecated_params": {
+    "insights": ["use_unified_attribution_setting"]
+  }
+}

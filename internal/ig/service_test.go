@@ -2,6 +2,7 @@ package ig
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -159,6 +160,24 @@ func TestBuildUploadRequestShapesStoriesPayload(t *testing.T) {
 	}
 }
 
+func TestBuildUploadRequestIncludesIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	request, _, err := BuildUploadRequest("v25.0", "token-1", "secret-1", MediaUploadOptions{
+		IGUserID:       "17841400008460056",
+		MediaURL:       "https://cdn.example.com/image.jpg",
+		MediaType:      MediaTypeImage,
+		IdempotencyKey: "publish_01",
+		IsCarouselItem: true,
+	})
+	if err != nil {
+		t.Fatalf("build upload request: %v", err)
+	}
+	if got := request.Form["idempotency_key"]; got != "publish_01" {
+		t.Fatalf("unexpected idempotency_key %q", got)
+	}
+}
+
 func TestBuildUploadRequestRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
@@ -272,6 +291,22 @@ func TestBuildPublishRequestShapesPayload(t *testing.T) {
 	}
 	if creationID != "creation_1" {
 		t.Fatalf("unexpected creation id %q", creationID)
+	}
+}
+
+func TestBuildPublishRequestIncludesIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	request, _, _, err := BuildPublishRequest("v25.0", "token-1", "secret-1", MediaPublishOptions{
+		IGUserID:       "17841400008460056",
+		CreationID:     "creation_1",
+		IdempotencyKey: "publish_01",
+	})
+	if err != nil {
+		t.Fatalf("build publish request: %v", err)
+	}
+	if got := request.Form["idempotency_key"]; got != "publish_01" {
+		t.Fatalf("unexpected idempotency_key %q", got)
 	}
 }
 
@@ -671,6 +706,16 @@ func TestServicePublishFeedImmediateFailsWhenContainerNotReady(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not ready for publish") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	var apiErr *graph.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected structured api error, got %T", err)
+	}
+	if apiErr.Type != igErrorTypeMediaNotReady {
+		t.Fatalf("unexpected error type %q", apiErr.Type)
+	}
+	if !apiErr.Retryable {
+		t.Fatalf("expected retryable=true, got %+v", apiErr)
 	}
 	if len(stub.calls) != 2 {
 		t.Fatalf("expected upload+status only, got %d calls", len(stub.calls))

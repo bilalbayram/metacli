@@ -25,39 +25,42 @@ const (
 const missedScheduleError = "scheduled publish time elapsed without execution"
 
 type ScheduledPublishRecord struct {
-	ScheduleID string `json:"schedule_id"`
-	Profile    string `json:"profile"`
-	Version    string `json:"version"`
-	Surface    string `json:"surface"`
-	IGUserID   string `json:"ig_user_id"`
-	MediaURL   string `json:"media_url"`
-	Caption    string `json:"caption"`
-	MediaType  string `json:"media_type"`
-	StrictMode bool   `json:"strict_mode"`
-	PublishAt  string `json:"publish_at"`
-	Status     string `json:"status"`
-	RetryCount int    `json:"retry_count"`
-	LastError  string `json:"last_error,omitempty"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	ScheduleID     string `json:"schedule_id"`
+	Profile        string `json:"profile"`
+	Version        string `json:"version"`
+	Surface        string `json:"surface"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	IGUserID       string `json:"ig_user_id"`
+	MediaURL       string `json:"media_url"`
+	Caption        string `json:"caption"`
+	MediaType      string `json:"media_type"`
+	StrictMode     bool   `json:"strict_mode"`
+	PublishAt      string `json:"publish_at"`
+	Status         string `json:"status"`
+	RetryCount     int    `json:"retry_count"`
+	LastError      string `json:"last_error,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type SchedulePublishOptions struct {
-	Profile    string
-	Version    string
-	Surface    string
-	IGUserID   string
-	MediaURL   string
-	Caption    string
-	MediaType  string
-	StrictMode bool
-	PublishAt  string
+	Profile        string
+	Version        string
+	Surface        string
+	IdempotencyKey string
+	IGUserID       string
+	MediaURL       string
+	Caption        string
+	MediaType      string
+	StrictMode     bool
+	PublishAt      string
 }
 
 type SchedulePublishResult struct {
-	Mode     string                 `json:"mode"`
-	Surface  string                 `json:"surface"`
-	Schedule ScheduledPublishRecord `json:"schedule"`
+	Mode                string                 `json:"mode"`
+	Surface             string                 `json:"surface"`
+	DuplicateSuppressed bool                   `json:"duplicate_suppressed"`
+	Schedule            ScheduledPublishRecord `json:"schedule"`
 }
 
 type ScheduleListOptions struct {
@@ -129,22 +132,38 @@ func (s *ScheduleService) Schedule(options SchedulePublishOptions) (*SchedulePub
 	}
 	reconcileMissedSchedules(&state, now)
 
+	if normalized.IdempotencyKey != "" {
+		duplicate, found, err := findDuplicateSchedule(state.Schedules, normalized, publishAt)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return &SchedulePublishResult{
+				Mode:                "scheduled",
+				Surface:             duplicate.Surface,
+				DuplicateSuppressed: true,
+				Schedule:            duplicate,
+			}, nil
+		}
+	}
+
 	scheduleID := nextScheduleID(state.NextSequence, normalized.Surface, normalized.IGUserID, normalized.MediaURL, publishAt)
 	record := ScheduledPublishRecord{
-		ScheduleID: scheduleID,
-		Profile:    normalized.Profile,
-		Version:    normalized.Version,
-		Surface:    normalized.Surface,
-		IGUserID:   normalized.IGUserID,
-		MediaURL:   normalized.MediaURL,
-		Caption:    normalized.Caption,
-		MediaType:  normalized.MediaType,
-		StrictMode: normalized.StrictMode,
-		PublishAt:  publishAt.UTC().Format(time.RFC3339),
-		Status:     ScheduleStatusScheduled,
-		RetryCount: 0,
-		CreatedAt:  now.Format(time.RFC3339),
-		UpdatedAt:  now.Format(time.RFC3339),
+		ScheduleID:     scheduleID,
+		Profile:        normalized.Profile,
+		Version:        normalized.Version,
+		Surface:        normalized.Surface,
+		IdempotencyKey: normalized.IdempotencyKey,
+		IGUserID:       normalized.IGUserID,
+		MediaURL:       normalized.MediaURL,
+		Caption:        normalized.Caption,
+		MediaType:      normalized.MediaType,
+		StrictMode:     normalized.StrictMode,
+		PublishAt:      publishAt.UTC().Format(time.RFC3339),
+		Status:         ScheduleStatusScheduled,
+		RetryCount:     0,
+		CreatedAt:      now.Format(time.RFC3339),
+		UpdatedAt:      now.Format(time.RFC3339),
 	}
 
 	state.NextSequence++
@@ -155,9 +174,10 @@ func (s *ScheduleService) Schedule(options SchedulePublishOptions) (*SchedulePub
 	}
 
 	return &SchedulePublishResult{
-		Mode:     "scheduled",
-		Surface:  normalized.Surface,
-		Schedule: record,
+		Mode:                "scheduled",
+		Surface:             normalized.Surface,
+		DuplicateSuppressed: false,
+		Schedule:            record,
 	}, nil
 }
 
@@ -239,7 +259,7 @@ func (s *ScheduleService) Cancel(options ScheduleCancelOptions) (*ScheduleTransi
 		return nil, err
 	}
 	if record.Status != ScheduleStatusScheduled {
-		return nil, fmt.Errorf("schedule %s cannot transition from %s to %s", scheduleID, record.Status, ScheduleStatusCanceled)
+		return nil, newStateTransitionError(scheduleID, record.Status, ScheduleStatusCanceled)
 	}
 
 	record.Status = ScheduleStatusCanceled
@@ -283,7 +303,7 @@ func (s *ScheduleService) Retry(options ScheduleRetryOptions) (*ScheduleTransiti
 		return nil, err
 	}
 	if record.Status != ScheduleStatusCanceled && record.Status != ScheduleStatusFailed {
-		return nil, fmt.Errorf("schedule %s cannot transition from %s to %s", scheduleID, record.Status, ScheduleStatusScheduled)
+		return nil, newStateTransitionError(scheduleID, record.Status, ScheduleStatusScheduled)
 	}
 
 	publishAtRaw := strings.TrimSpace(options.PublishAt)
@@ -351,16 +371,22 @@ func normalizeSchedulePublishOptions(options SchedulePublishOptions, now time.Ti
 	}
 
 	normalized := SchedulePublishOptions{
-		Profile:    normalizedProfile,
-		Version:    strings.TrimSpace(options.Version),
-		Surface:    surface,
-		IGUserID:   strings.TrimSpace(options.IGUserID),
-		MediaURL:   strings.TrimSpace(options.MediaURL),
-		Caption:    options.Caption,
-		MediaType:  mediaType,
-		StrictMode: options.StrictMode,
-		PublishAt:  publishAt.UTC().Format(time.RFC3339),
+		Profile:        normalizedProfile,
+		Version:        strings.TrimSpace(options.Version),
+		Surface:        surface,
+		IdempotencyKey: strings.TrimSpace(options.IdempotencyKey),
+		IGUserID:       strings.TrimSpace(options.IGUserID),
+		MediaURL:       strings.TrimSpace(options.MediaURL),
+		Caption:        options.Caption,
+		MediaType:      mediaType,
+		StrictMode:     options.StrictMode,
+		PublishAt:      publishAt.UTC().Format(time.RFC3339),
 	}
+	idempotencyKey, err := normalizeIdempotencyKey(normalized.IdempotencyKey)
+	if err != nil {
+		return SchedulePublishOptions{}, time.Time{}, err
+	}
+	normalized.IdempotencyKey = idempotencyKey
 	if normalized.Version == "" {
 		return SchedulePublishOptions{}, time.Time{}, errors.New("version is required")
 	}
@@ -530,6 +556,9 @@ func validateScheduledRecord(record ScheduledPublishRecord) error {
 	if _, err := normalizeScheduleStatus(record.Status); err != nil {
 		return err
 	}
+	if _, err := normalizeIdempotencyKey(record.IdempotencyKey); err != nil {
+		return err
+	}
 	if record.RetryCount < 0 {
 		return errors.New("retry_count cannot be negative")
 	}
@@ -604,5 +633,58 @@ func findSchedule(records []ScheduledPublishRecord, scheduleID string) (Schedule
 			return record, idx, nil
 		}
 	}
-	return ScheduledPublishRecord{}, -1, fmt.Errorf("schedule %s not found", scheduleID)
+	return ScheduledPublishRecord{}, -1, newScheduleNotFoundError(scheduleID)
+}
+
+func findDuplicateSchedule(records []ScheduledPublishRecord, options SchedulePublishOptions, publishAt time.Time) (ScheduledPublishRecord, bool, error) {
+	signature := schedulePayloadSignatureFromOptions(options, publishAt)
+	for _, record := range records {
+		if record.Profile != options.Profile {
+			continue
+		}
+		recordIdempotencyKey, err := normalizeIdempotencyKey(record.IdempotencyKey)
+		if err != nil {
+			return ScheduledPublishRecord{}, false, err
+		}
+		if recordIdempotencyKey != options.IdempotencyKey {
+			continue
+		}
+		if schedulePayloadSignatureFromRecord(record) != signature {
+			return ScheduledPublishRecord{}, false, newIdempotencyConflictError(options.IdempotencyKey, record.ScheduleID)
+		}
+		return record, true, nil
+	}
+	return ScheduledPublishRecord{}, false, nil
+}
+
+func schedulePayloadSignatureFromOptions(options SchedulePublishOptions, publishAt time.Time) string {
+	payload := strings.Join([]string{
+		options.Profile,
+		options.Version,
+		options.Surface,
+		options.IGUserID,
+		options.MediaURL,
+		options.Caption,
+		options.MediaType,
+		fmt.Sprintf("%t", options.StrictMode),
+		publishAt.UTC().Format(time.RFC3339),
+	}, "\x1f")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
+
+func schedulePayloadSignatureFromRecord(record ScheduledPublishRecord) string {
+	payload := strings.Join([]string{
+		record.Profile,
+		record.Version,
+		record.Surface,
+		record.IGUserID,
+		record.MediaURL,
+		record.Caption,
+		record.MediaType,
+		fmt.Sprintf("%t", record.StrictMode),
+		record.PublishAt,
+	}, "\x1f")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
 }

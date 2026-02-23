@@ -315,6 +315,7 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 		mediaURL          string
 		caption           string
 		mediaType         string
+		idempotencyKey    string
 		publishAt         string
 		scheduleStatePath string
 		strict            bool
@@ -330,62 +331,65 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 				Namespace: igNamespace,
 				Command:   spec.traceCommand,
 			}); err != nil {
-				return writeCommandError(cmd, runtime, spec.commandName, err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
 			if err != nil {
-				return writeCommandError(cmd, runtime, spec.commandName, err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			options := ig.FeedPublishOptions{
-				IGUserID:   igUserID,
-				MediaURL:   mediaURL,
-				Caption:    caption,
-				MediaType:  mediaType,
-				StrictMode: strict,
+				IGUserID:       igUserID,
+				MediaURL:       mediaURL,
+				Caption:        caption,
+				MediaType:      mediaType,
+				StrictMode:     strict,
+				IdempotencyKey: idempotencyKey,
 			}
 
 			normalizedMediaType, err := ig.ValidatePublishMediaTypeForSurface(spec.surface, options.MediaType)
 			if err != nil {
-				return writeCommandError(cmd, runtime, spec.commandName, err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 			options.MediaType = normalizedMediaType
 
 			captionValidation := ig.ValidateCaption(options.Caption, options.StrictMode)
 			if !captionValidation.Valid {
-				return writeCommandError(cmd, runtime, spec.commandName, errors.New(strings.Join(captionValidation.Errors, "; ")))
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, errors.New(strings.Join(captionValidation.Errors, "; ")))
 			}
 
 			if _, _, err := ig.BuildUploadRequest(resolvedVersion, creds.Token, creds.AppSecret, ig.MediaUploadOptions{
-				IGUserID:  options.IGUserID,
-				MediaURL:  options.MediaURL,
-				Caption:   options.Caption,
-				MediaType: options.MediaType,
+				IGUserID:       options.IGUserID,
+				MediaURL:       options.MediaURL,
+				Caption:        options.Caption,
+				MediaType:      options.MediaType,
+				IdempotencyKey: options.IdempotencyKey,
 			}); err != nil {
-				return writeCommandError(cmd, runtime, spec.commandName, err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			if strings.TrimSpace(publishAt) != "" {
 				resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
 				if err != nil {
-					return writeCommandError(cmd, runtime, spec.commandName, err)
+					return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 				}
 
 				scheduleService := ig.NewScheduleService(resolvedSchedulePath)
 				result, err := scheduleService.Schedule(ig.SchedulePublishOptions{
-					Profile:    creds.Name,
-					Version:    resolvedVersion,
-					Surface:    spec.surface,
-					IGUserID:   options.IGUserID,
-					MediaURL:   options.MediaURL,
-					Caption:    options.Caption,
-					MediaType:  options.MediaType,
-					StrictMode: options.StrictMode,
-					PublishAt:  publishAt,
+					Profile:        creds.Name,
+					Version:        resolvedVersion,
+					Surface:        spec.surface,
+					IdempotencyKey: options.IdempotencyKey,
+					IGUserID:       options.IGUserID,
+					MediaURL:       options.MediaURL,
+					Caption:        options.Caption,
+					MediaType:      options.MediaType,
+					StrictMode:     options.StrictMode,
+					PublishAt:      publishAt,
 				})
 				if err != nil {
-					return writeCommandError(cmd, runtime, spec.commandName, err)
+					return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 				}
 				return writeSuccess(cmd, runtime, spec.commandName, result, nil, nil)
 			}
@@ -403,7 +407,7 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 				err = errors.New("invalid publish command surface")
 			}
 			if err != nil {
-				return writeCommandError(cmd, runtime, spec.commandName, err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			return writeSuccess(cmd, runtime, spec.commandName, result, nil, nil)
@@ -416,6 +420,7 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL (required)")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption (required)")
 	cmd.Flags().StringVar(&mediaType, "media-type", spec.defaultMediaType, spec.mediaTypeHelp)
+	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key used to suppress duplicate publish/schedule requests")
 	cmd.Flags().StringVar(&publishAt, "publish-at", "", "Schedule publish time (RFC3339); when set, publish is scheduled instead of immediate execution")
 	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
 	cmd.Flags().BoolVar(&strict, "strict", true, "Treat caption warnings as errors")
@@ -452,12 +457,12 @@ func newIGPublishScheduleListCommand(runtime Runtime, pluginRuntime plugin.Runti
 				Namespace: igNamespace,
 				Command:   "publish-schedule-list",
 			}); err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule list", err)
 			}
 
 			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule list", err)
 			}
 
 			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
@@ -465,7 +470,7 @@ func newIGPublishScheduleListCommand(runtime Runtime, pluginRuntime plugin.Runti
 				Status: status,
 			})
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule list", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule list", err)
 			}
 			return writeSuccess(cmd, runtime, "meta ig publish schedule list", result, nil, nil)
 		},
@@ -492,12 +497,12 @@ func newIGPublishScheduleCancelCommand(runtime Runtime, pluginRuntime plugin.Run
 				Namespace: igNamespace,
 				Command:   "publish-schedule-cancel",
 			}); err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
 			}
 
 			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
 			}
 
 			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
@@ -505,7 +510,7 @@ func newIGPublishScheduleCancelCommand(runtime Runtime, pluginRuntime plugin.Run
 				ScheduleID: scheduleID,
 			})
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule cancel", err)
 			}
 			return writeSuccess(cmd, runtime, "meta ig publish schedule cancel", result, nil, nil)
 		},
@@ -533,12 +538,12 @@ func newIGPublishScheduleRetryCommand(runtime Runtime, pluginRuntime plugin.Runt
 				Namespace: igNamespace,
 				Command:   "publish-schedule-retry",
 			}); err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule retry", err)
 			}
 
 			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule retry", err)
 			}
 
 			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
@@ -547,7 +552,7 @@ func newIGPublishScheduleRetryCommand(runtime Runtime, pluginRuntime plugin.Runt
 				PublishAt:  publishAt,
 			})
 			if err != nil {
-				return writeCommandError(cmd, runtime, "meta ig publish schedule retry", err)
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule retry", err)
 			}
 			return writeSuccess(cmd, runtime, "meta ig publish schedule retry", result, nil, nil)
 		},
@@ -590,4 +595,8 @@ func resolveIGScheduleStatePath(path string) (string, error) {
 		return resolvedPath, nil
 	}
 	return ig.DefaultScheduleStatePath()
+}
+
+func writeIGPublishScheduleCommandError(cmd *cobra.Command, runtime Runtime, commandName string, err error) error {
+	return writeCommandError(cmd, runtime, commandName, ig.ClassifyPublishScheduleError(err))
 }

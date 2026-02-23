@@ -75,13 +75,13 @@ func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 1,\n  \"status\": \"initialized\"\n}\n"
+	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 2,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    }\n  }\n}\n"
 	if string(rawState) != expectedState {
 		t.Fatalf("unexpected state file contents:\n%s", string(rawState))
 	}
 }
 
-func TestOpsRunCommandWritesReportSkeleton(t *testing.T) {
+func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 	t.Parallel()
 
 	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
@@ -121,11 +121,76 @@ func TestOpsRunCommandWritesReportSkeleton(t *testing.T) {
 	if data.Report.Kind != "ops_report" {
 		t.Fatalf("unexpected report kind: %s", data.Report.Kind)
 	}
-	if len(data.Report.Checks) != 0 {
-		t.Fatalf("expected no checks, got %d", len(data.Report.Checks))
+	if len(data.Report.Checks) != 1 {
+		t.Fatalf("expected one check, got %d", len(data.Report.Checks))
 	}
-	if data.Report.Summary.Total != 0 || data.Report.Summary.Passed != 0 || data.Report.Summary.Failed != 0 {
-		t.Fatalf("expected zero summary values, got %+v", data.Report.Summary)
+	check := data.Report.Checks[0]
+	if check.Name != "changelog_occ_delta" {
+		t.Fatalf("unexpected check name: %s", check.Name)
+	}
+	if check.Status != ops.CheckStatusPass {
+		t.Fatalf("unexpected check status: %s", check.Status)
+	}
+	if check.Blocking {
+		t.Fatal("expected non-blocking check")
+	}
+	if data.Report.Summary.Total != 1 || data.Report.Summary.Passed != 1 || data.Report.Summary.Failed != 0 || data.Report.Summary.Blocking != 0 {
+		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
+	}
+}
+
+func TestOpsRunCommandReturnsPolicyExitOnBlockingFindings(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	state, err := ops.LoadBaseline(statePath)
+	if err != nil {
+		t.Fatalf("load baseline state: %v", err)
+	}
+	state.Snapshots.ChangelogOCC.LatestVersion = "v24.0"
+	if err := ops.SaveBaseline(statePath, state); err != nil {
+		t.Fatalf("save baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	if err == nil {
+		t.Fatal("expected blocking ops run to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodePolicy {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodePolicy)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "blocking_findings" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if data.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected blocking summary: %+v", data.Report.Summary)
 	}
 }
 

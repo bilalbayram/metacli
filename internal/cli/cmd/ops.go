@@ -75,8 +75,19 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 			}
 
 			envelope := ops.NewSuccessEnvelope(ops.CommandRun, result)
+			if code := ops.RunExitCode(result.Report); code != ops.ExitCodeSuccess {
+				envelope.Success = false
+				envelope.ExitCode = code
+				envelope.Error = &ops.ErrorInfo{
+					Type:    "blocking_findings",
+					Message: fmt.Sprintf("ops run reported %d blocking finding(s)", result.Report.Summary.Blocking),
+				}
+			}
 			if err := ops.WriteEnvelope(cmd.OutOrStdout(), envelope); err != nil {
 				return writeOpsError(cmd, ops.CommandRun, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
+			}
+			if !envelope.Success {
+				return ops.WrapExit(envelope.ExitCode, errors.New(envelope.Error.Message))
 			}
 			return nil
 		},

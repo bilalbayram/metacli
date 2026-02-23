@@ -48,15 +48,17 @@ type Report struct {
 }
 
 type Summary struct {
-	Total  int `json:"total"`
-	Passed int `json:"passed"`
-	Failed int `json:"failed"`
+	Total    int `json:"total"`
+	Passed   int `json:"passed"`
+	Failed   int `json:"failed"`
+	Blocking int `json:"blocking"`
 }
 
 type Check struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Blocking bool   `json:"blocking"`
+	Message  string `json:"message,omitempty"`
 }
 
 func NewSuccessEnvelope(command string, data any) Envelope {
@@ -118,6 +120,8 @@ func errorType(code int) string {
 		return "input_error"
 	case ExitCodeState:
 		return "state_error"
+	case ExitCodePolicy:
+		return "policy_error"
 	default:
 		return "error"
 	}

@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,7 +21,7 @@ func TestNewCampaignCommandIncludesLifecycleSubcommands(t *testing.T) {
 
 	cmd := NewCampaignCommand(Runtime{})
 
-	for _, name := range []string{"create", "update", "pause", "resume"} {
+	for _, name := range []string{"create", "update", "pause", "resume", "clone"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s subcommand: %v", name, err)
@@ -503,6 +506,181 @@ func TestCampaignResumeReturnsStructuredGraphError(t *testing.T) {
 	}
 }
 
+func TestCampaignCloneExecutesReadSanitizeCreateFlow(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected read method %s", r.Method)
+			}
+			if r.URL.Path != "/v25.0/source_77" {
+				t.Fatalf("unexpected read path %q", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("fields"); got != "id,name,objective,status,daily_budget,lifetime_budget" {
+				t.Fatalf("unexpected fields query %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":              "source_77",
+				"name":            "Source Name",
+				"objective":       "OUTCOME_SALES",
+				"status":          "PAUSED",
+				"daily_budget":    "1000",
+				"lifetime_budget": "0",
+			})
+		case 2:
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected create method %s", r.Method)
+			}
+			if r.URL.Path != "/v25.0/act_4242/campaigns" {
+				t.Fatalf("unexpected create path %q", r.URL.Path)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read create request body: %v", err)
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("parse create request body: %v", err)
+			}
+			if got := form.Get("name"); got != "Clone Name" {
+				t.Fatalf("unexpected cloned name %q", got)
+			}
+			if got := form.Get("status"); got != "ACTIVE" {
+				t.Fatalf("unexpected cloned status %q", got)
+			}
+			if got := form.Get("objective"); got != "OUTCOME_SALES" {
+				t.Fatalf("unexpected cloned objective %q", got)
+			}
+			if got := form.Get("id"); got != "" {
+				t.Fatalf("immutable id should be removed, got %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "clone_88",
+			})
+		default:
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"clone",
+		"--source-campaign-id", "source_77",
+		"--account-id", "4242",
+		"--params", "name=Clone Name,status=ACTIVE",
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign clone: %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Fatalf("expected two requests, got %d", requestCount)
+	}
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign clone")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["campaign_id"]; got != "clone_88" {
+		t.Fatalf("unexpected campaign id %v", got)
+	}
+	if got := data["source_campaign_id"]; got != "source_77" {
+		t.Fatalf("unexpected source campaign id %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignCloneFailsOnUnknownField(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"clone",
+		"--source-campaign-id", "source_77",
+		"--account-id", "4242",
+		"--fields", "id,unknown_field",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "campaign clone field lint failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on lint failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign clone" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
 func useCampaignDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
 	originalLoad := campaignLoadProfileCredentials
@@ -528,7 +706,7 @@ func writeCampaignSchemaPack(t *testing.T) string {
 	pack := `{
   "domain":"marketing",
   "version":"v25.0",
-  "entities":{"campaign":["id","name","status","objective"]},
+  "entities":{"campaign":["id","name","status","objective","daily_budget","lifetime_budget"]},
   "endpoint_params":{"campaigns.post":["name","status","objective","daily_budget","lifetime_budget"]},
   "deprecated_params":{"campaigns.post":["legacy_param"]}
 }`

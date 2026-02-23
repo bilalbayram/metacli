@@ -2,9 +2,12 @@ package marketing
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -242,6 +245,187 @@ func TestCampaignUpdateRejectsEmptyPayload(t *testing.T) {
 		t.Fatal("expected update error")
 	}
 	if !strings.Contains(err.Error(), "payload cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCampaignCloneReadsSanitizesAndCreates(t *testing.T) {
+	t.Parallel()
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected method for clone read: %s", r.Method)
+			}
+			if r.URL.Path != "/v25.0/source_1" {
+				t.Fatalf("unexpected clone read path %q", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("fields"); got != "id,name,objective,status,daily_budget,account_id,effective_status" {
+				t.Fatalf("unexpected fields query %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":               "source_1",
+				"name":             "Original Campaign",
+				"objective":        "OUTCOME_SALES",
+				"status":           "PAUSED",
+				"daily_budget":     "1000",
+				"account_id":       "123",
+				"effective_status": "PAUSED",
+			})
+		case 2:
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected method for clone create: %s", r.Method)
+			}
+			if r.URL.Path != "/v25.0/act_999/campaigns" {
+				t.Fatalf("unexpected clone create path %q", r.URL.Path)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read clone create body: %v", err)
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("parse clone create form: %v", err)
+			}
+			if got := form.Get("name"); got != "Cloned Campaign" {
+				t.Fatalf("unexpected cloned name %q", got)
+			}
+			if got := form.Get("status"); got != "ACTIVE" {
+				t.Fatalf("unexpected cloned status %q", got)
+			}
+			if got := form.Get("objective"); got != "OUTCOME_SALES" {
+				t.Fatalf("unexpected cloned objective %q", got)
+			}
+			if got := form.Get("daily_budget"); got != "1000" {
+				t.Fatalf("unexpected cloned daily_budget %q", got)
+			}
+			if got := form.Get("id"); got != "" {
+				t.Fatalf("immutable id should not be cloned, got %q", got)
+			}
+			if got := form.Get("account_id"); got != "" {
+				t.Fatalf("immutable account_id should not be cloned, got %q", got)
+			}
+			if got := form.Get("effective_status"); got != "" {
+				t.Fatalf("immutable effective_status should not be cloned, got %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "new_1",
+			})
+		default:
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	service := NewCampaignService(client)
+
+	result, err := service.Clone(context.Background(), "v25.0", "token-1", "", CampaignCloneInput{
+		SourceCampaignID: "source_1",
+		TargetAccountID:  "999",
+		Overrides: map[string]string{
+			"name":   "Cloned Campaign",
+			"status": "ACTIVE",
+		},
+		Fields: []string{"id", "name", "objective", "status", "daily_budget", "account_id", "effective_status"},
+	})
+	if err != nil {
+		t.Fatalf("clone campaign: %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Fatalf("expected two requests, got %d", requestCount)
+	}
+	if result.Operation != "clone" {
+		t.Fatalf("unexpected operation %q", result.Operation)
+	}
+	if result.SourceCampaignID != "source_1" {
+		t.Fatalf("unexpected source campaign id %q", result.SourceCampaignID)
+	}
+	if result.CampaignID != "new_1" {
+		t.Fatalf("unexpected campaign id %q", result.CampaignID)
+	}
+	if !slices.Contains(result.RemovedFields, "id") {
+		t.Fatalf("expected removed fields to contain id, got %v", result.RemovedFields)
+	}
+	if !slices.Contains(result.RemovedFields, "account_id") {
+		t.Fatalf("expected removed fields to contain account_id, got %v", result.RemovedFields)
+	}
+	if !slices.Contains(result.RemovedFields, "effective_status") {
+		t.Fatalf("expected removed fields to contain effective_status, got %v", result.RemovedFields)
+	}
+}
+
+func TestCampaignCloneFailsWhenPayloadEmptyAfterSanitization(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":               "source_1",
+			"account_id":       "123",
+			"effective_status": "PAUSED",
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	service := NewCampaignService(client)
+
+	_, err := service.Clone(context.Background(), "v25.0", "token-1", "", CampaignCloneInput{
+		SourceCampaignID: "source_1",
+		TargetAccountID:  "999",
+		Fields:           []string{"id", "account_id", "effective_status"},
+	})
+	if err == nil {
+		t.Fatal("expected clone error")
+	}
+	if !strings.Contains(err.Error(), "payload is empty after sanitization") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only source read request, got %d", requestCount)
+	}
+}
+
+func TestCampaignCloneFailsWhenCreateResponseMissingID(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":        "source_1",
+				"name":      "Original",
+				"objective": "OUTCOME_SALES",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	service := NewCampaignService(client)
+
+	_, err := service.Clone(context.Background(), "v25.0", "token-1", "", CampaignCloneInput{
+		SourceCampaignID: "source_1",
+		TargetAccountID:  "999",
+	})
+	if err == nil {
+		t.Fatal("expected clone error")
+	}
+	if !strings.Contains(err.Error(), "did not include id") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -42,6 +42,7 @@ func NewCampaignCommand(runtime Runtime) *cobra.Command {
 	campaignCmd.AddCommand(newCampaignUpdateCommand(runtime))
 	campaignCmd.AddCommand(newCampaignPauseCommand(runtime))
 	campaignCmd.AddCommand(newCampaignResumeCommand(runtime))
+	campaignCmd.AddCommand(newCampaignCloneCommand(runtime))
 	return campaignCmd
 }
 
@@ -221,6 +222,81 @@ func newCampaignStatusCommand(runtime Runtime, operation string, status string) 
 	return cmd
 }
 
+func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile          string
+		version          string
+		sourceCampaignID string
+		accountID        string
+		fieldsRaw        string
+		paramsRaw        string
+		jsonRaw          string
+		schemaDir        string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "clone",
+		Short: "Clone a campaign into a target ad account",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveCampaignProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			overrides, err := parseKeyValueList(paramsRaw)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+			jsonOverrides, err := parseInlineJSONPayload(jsonRaw)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+			if err := mergeParams(overrides, jsonOverrides, "--json"); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			linter, err := newCampaignMutationLinter(creds, resolvedVersion, schemaDir)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			cloneFields := csvToSlice(fieldsRaw)
+			if len(cloneFields) == 0 {
+				cloneFields = append([]string(nil), marketing.DefaultCampaignCloneFields...)
+			}
+			if err := lintCampaignReadFields(linter, cloneFields); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+			if err := lintCampaignMutation(linter, overrides); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			result, err := campaignNewService(campaignNewGraphClient()).Clone(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCloneInput{
+				SourceCampaignID: sourceCampaignID,
+				TargetAccountID:  accountID,
+				Overrides:        overrides,
+				Fields:           cloneFields,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta campaign clone", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&sourceCampaignID, "source-campaign-id", "", "Source campaign id")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Target ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", strings.Join(marketing.DefaultCampaignCloneFields, ","), "Comma-separated fields to read from source campaign")
+	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated override params (k=v,k2=v2)")
+	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object overrides")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	return cmd
+}
+
 func resolveCampaignProfileAndVersion(runtime Runtime, profile string, version string) (*ProfileCredentials, string, error) {
 	resolvedProfile := strings.TrimSpace(profile)
 	if resolvedProfile == "" {
@@ -265,6 +341,18 @@ func lintCampaignMutation(linter *lint.Linter, params map[string]string) error {
 	}, true)
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("campaign mutation lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
+	}
+	return nil
+}
+
+func lintCampaignReadFields(linter *lint.Linter, fields []string) error {
+	result := linter.Lint(&lint.RequestSpec{
+		Method: "GET",
+		Path:   campaignMutationLintPath,
+		Fields: fields,
+	}, true)
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("campaign clone field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
 }

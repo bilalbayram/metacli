@@ -75,7 +75,7 @@ func TestNewIGCommandIncludesPublishSubcommands(t *testing.T) {
 		t.Fatalf("expected publish command, got %#v", publishCmd)
 	}
 
-	for _, name := range []string{"feed", "reel", "story"} {
+	for _, name := range []string{"feed", "reel", "story", "schedule"} {
 		subcommand, _, err := cmd.Find([]string{"publish", name})
 		if err != nil {
 			t.Fatalf("find publish %s command: %v", name, err)

@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"errors"
+	"strings"
 
+	"github.com/bilalbayram/metacli/internal/config"
+	"github.com/bilalbayram/metacli/internal/graph"
+	"github.com/bilalbayram/metacli/internal/ig"
 	"github.com/bilalbayram/metacli/internal/plugin"
 	"github.com/spf13/cobra"
 )
@@ -10,6 +14,13 @@ import (
 const (
 	igPluginID  = "instagram"
 	igNamespace = "ig"
+)
+
+var (
+	igLoadProfileCredentials = loadProfileCredentials
+	igNewGraphClient         = func() *graph.Client {
+		return graph.NewClient(nil, "")
+	}
 )
 
 func NewIGCommand(runtime Runtime) *cobra.Command {
@@ -39,6 +50,7 @@ func newIGPluginManifest(runtime Runtime) plugin.Manifest {
 				},
 			}
 			igCmd.AddCommand(newIGHealthCommand(runtime, pluginRuntime))
+			igCmd.AddCommand(newIGMediaCommand(runtime, pluginRuntime))
 			return igCmd, nil
 		},
 	}
@@ -64,4 +76,150 @@ func newIGHealthCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Co
 			}, nil, nil)
 		},
 	}
+}
+
+func newIGMediaCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	mediaCmd := &cobra.Command{
+		Use:   "media",
+		Short: "Instagram media upload and status commands",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New("ig media requires a subcommand")
+		},
+	}
+	mediaCmd.AddCommand(newIGMediaUploadCommand(runtime, pluginRuntime))
+	mediaCmd.AddCommand(newIGMediaStatusCommand(runtime, pluginRuntime))
+	return mediaCmd
+}
+
+func newIGMediaUploadCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		profile        string
+		version        string
+		igUserID       string
+		mediaURL       string
+		caption        string
+		mediaType      string
+		isCarouselItem bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "upload",
+		Short: "Upload an Instagram media container",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "media-upload",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media upload", err)
+			}
+
+			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media upload", err)
+			}
+
+			options := ig.MediaUploadOptions{
+				IGUserID:       igUserID,
+				MediaURL:       mediaURL,
+				Caption:        caption,
+				MediaType:      mediaType,
+				IsCarouselItem: isCarouselItem,
+			}
+			if _, _, err := ig.BuildUploadRequest(resolvedVersion, creds.Token, creds.AppSecret, options); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media upload", err)
+			}
+
+			service := ig.New(igNewGraphClient())
+			result, err := service.Upload(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media upload", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta ig media upload", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id")
+	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL")
+	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption")
+	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS")
+	cmd.Flags().BoolVar(&isCarouselItem, "is-carousel-item", false, "Mark media container as a carousel child")
+	return cmd
+}
+
+func newIGMediaStatusCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		profile    string
+		version    string
+		creationID string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Get Instagram media container processing status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "media-status",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media status", err)
+			}
+
+			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media status", err)
+			}
+
+			options := ig.MediaStatusOptions{
+				CreationID: creationID,
+			}
+			if _, err := ig.BuildStatusRequest(resolvedVersion, creds.Token, creds.AppSecret, options); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media status", err)
+			}
+
+			service := ig.New(igNewGraphClient())
+			result, err := service.Status(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig media status", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta ig media status", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&creationID, "creation-id", "", "Instagram media container creation id")
+	return cmd
+}
+
+func resolveIGProfileAndVersion(runtime Runtime, profile string, version string) (*ProfileCredentials, string, error) {
+	resolvedProfile := strings.TrimSpace(profile)
+	if resolvedProfile == "" {
+		resolvedProfile = runtime.ProfileName()
+	}
+	if resolvedProfile == "" {
+		return nil, "", errors.New("profile is required (--profile or global --profile)")
+	}
+
+	creds, err := igLoadProfileCredentials(resolvedProfile)
+	if err != nil {
+		return nil, "", err
+	}
+
+	resolvedVersion := strings.TrimSpace(version)
+	if resolvedVersion == "" {
+		resolvedVersion = creds.Profile.GraphVersion
+	}
+	if resolvedVersion == "" {
+		resolvedVersion = config.DefaultGraphVersion
+	}
+
+	return creds, resolvedVersion, nil
 }

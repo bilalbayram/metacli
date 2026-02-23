@@ -43,7 +43,7 @@ func NewRootCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(command.NewAuthCommand(runtime))
-	cmd.AddCommand(command.NewPlaceholderGroup("api"))
+	cmd.AddCommand(command.NewAPICommand(runtime))
 	cmd.AddCommand(command.NewPlaceholderGroup("insights"))
 	cmd.AddCommand(command.NewPlaceholderGroup("lint"))
 	cmd.AddCommand(command.NewPlaceholderGroup("schema"))

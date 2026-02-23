@@ -9,14 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/bilalbayram/metacli/internal/changelog"
+	"github.com/bilalbayram/metacli/internal/config"
 )
 
 const (
 	StateSchemaVersion = 1
-	BaselineVersion    = 1
+	BaselineVersion    = 2
 )
 
 const baselineStatusInitialized = "initialized"
+const occSnapshotDigest = "occ.2025.stable"
 
 var (
 	ErrStatePathRequired    = errors.New("state path is required")
@@ -24,17 +29,34 @@ var (
 )
 
 type BaselineState struct {
-	SchemaVersion   int    `json:"schema_version"`
-	BaselineVersion int    `json:"baseline_version"`
-	Status          string `json:"status"`
+	SchemaVersion   int       `json:"schema_version"`
+	BaselineVersion int       `json:"baseline_version"`
+	Status          string    `json:"status"`
+	Snapshots       Snapshots `json:"snapshots"`
 }
 
-func NewBaselineState() BaselineState {
+type Snapshots struct {
+	ChangelogOCC ChangelogOCCSnapshot `json:"changelog_occ"`
+}
+
+type ChangelogOCCSnapshot struct {
+	LatestVersion string `json:"latest_version"`
+	OCCDigest     string `json:"occ_digest"`
+}
+
+func NewBaselineState() (BaselineState, error) {
+	snapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
+	if err != nil {
+		return BaselineState{}, err
+	}
 	return BaselineState{
 		SchemaVersion:   StateSchemaVersion,
 		BaselineVersion: BaselineVersion,
 		Status:          baselineStatusInitialized,
-	}
+		Snapshots: Snapshots{
+			ChangelogOCC: snapshot,
+		},
+	}, nil
 }
 
 func DefaultStatePath() (string, error) {
@@ -57,7 +79,10 @@ func InitBaseline(path string) (BaselineState, error) {
 		return BaselineState{}, fmt.Errorf("stat baseline state %s: %w", path, err)
 	}
 
-	state := NewBaselineState()
+	state, err := NewBaselineState()
+	if err != nil {
+		return BaselineState{}, err
+	}
 	if err := SaveBaseline(path, state); err != nil {
 		return BaselineState{}, err
 	}
@@ -149,7 +174,39 @@ func (s BaselineState) Validate() error {
 	if s.Status != baselineStatusInitialized {
 		return fmt.Errorf("baseline status must be %q", baselineStatusInitialized)
 	}
+	if err := s.Snapshots.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s Snapshots) Validate() error {
+	if err := s.ChangelogOCC.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s ChangelogOCCSnapshot) Validate() error {
+	if strings.TrimSpace(s.LatestVersion) == "" {
+		return errors.New("baseline changelog_occ.latest_version is required")
+	}
+	if strings.TrimSpace(s.OCCDigest) == "" {
+		return errors.New("baseline changelog_occ.occ_digest is required")
+	}
+	return nil
+}
+
+func captureChangelogOCCSnapshot(now time.Time) (ChangelogOCCSnapshot, error) {
+	checker := changelog.NewChecker()
+	result, err := checker.Check(config.DefaultGraphVersion, now.UTC())
+	if err != nil {
+		return ChangelogOCCSnapshot{}, fmt.Errorf("capture changelog snapshot: %w", err)
+	}
+	return ChangelogOCCSnapshot{
+		LatestVersion: result.LatestVersion,
+		OCCDigest:     occSnapshotDigest,
+	}, nil
 }
 
 func marshalState(state BaselineState) ([]byte, error) {

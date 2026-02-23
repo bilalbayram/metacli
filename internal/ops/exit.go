@@ -10,6 +10,7 @@ const (
 	ExitCodeUnknown = 1
 	ExitCodeState   = 2
 	ExitCodeInput   = 4
+	ExitCodePolicy  = 8
 )
 
 type ExitError struct {

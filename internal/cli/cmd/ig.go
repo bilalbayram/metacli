@@ -52,6 +52,7 @@ func newIGPluginManifest(runtime Runtime) plugin.Manifest {
 			igCmd.AddCommand(newIGHealthCommand(runtime, pluginRuntime))
 			igCmd.AddCommand(newIGMediaCommand(runtime, pluginRuntime))
 			igCmd.AddCommand(newIGCaptionCommand(runtime, pluginRuntime))
+			igCmd.AddCommand(newIGPublishCommand(runtime, pluginRuntime))
 			return igCmd, nil
 		},
 	}
@@ -102,6 +103,18 @@ func newIGCaptionCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.C
 	}
 	captionCmd.AddCommand(newIGCaptionValidateCommand(runtime, pluginRuntime))
 	return captionCmd
+}
+
+func newIGPublishCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	publishCmd := &cobra.Command{
+		Use:   "publish",
+		Short: "Instagram publishing commands",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return errors.New("ig publish requires a subcommand")
+		},
+	}
+	publishCmd.AddCommand(newIGPublishFeedCommand(runtime, pluginRuntime))
+	return publishCmd
 }
 
 func newIGCaptionValidateCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
@@ -242,6 +255,77 @@ func newIGMediaStatusCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&creationID, "creation-id", "", "Instagram media container creation id")
+	return cmd
+}
+
+func newIGPublishFeedCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		profile   string
+		version   string
+		igUserID  string
+		mediaURL  string
+		caption   string
+		mediaType string
+		strict    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "feed",
+		Short: "Publish Instagram feed media in immediate mode",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "publish-feed",
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+			}
+
+			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+			}
+
+			options := ig.FeedPublishOptions{
+				IGUserID:   igUserID,
+				MediaURL:   mediaURL,
+				Caption:    caption,
+				MediaType:  mediaType,
+				StrictMode: strict,
+			}
+
+			captionValidation := ig.ValidateCaption(options.Caption, options.StrictMode)
+			if !captionValidation.Valid {
+				return writeCommandError(cmd, runtime, "meta ig publish feed", errors.New(strings.Join(captionValidation.Errors, "; ")))
+			}
+
+			if _, _, err := ig.BuildUploadRequest(resolvedVersion, creds.Token, creds.AppSecret, ig.MediaUploadOptions{
+				IGUserID:  options.IGUserID,
+				MediaURL:  options.MediaURL,
+				Caption:   options.Caption,
+				MediaType: options.MediaType,
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+			}
+
+			service := ig.New(igNewGraphClient())
+			result, err := service.PublishFeedImmediate(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, options)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ig publish feed", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta ig publish feed", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id (required)")
+	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL (required)")
+	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption (required)")
+	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS")
+	cmd.Flags().BoolVar(&strict, "strict", true, "Treat caption warnings as errors")
 	return cmd
 }
 

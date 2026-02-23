@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAuthorizeCommandAllowsBoundCapability(t *testing.T) {
@@ -39,6 +40,148 @@ func TestAuthorizeCommandAllowsBoundCapability(t *testing.T) {
 	}
 	if trace.DecisionTrace[1].Effect != PolicyEffectAllow || !trace.DecisionTrace[1].Matched {
 		t.Fatalf("unexpected decision trace[1]: %+v", trace.DecisionTrace[1])
+	}
+}
+
+func TestAuthorizeCommandRequiresApprovalForHighRiskCommand(t *testing.T) {
+	t.Parallel()
+
+	cfg := validApprovalAuthzConfig()
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+	})
+	if err == nil {
+		t.Fatal("expected deny error when approval token is missing")
+	}
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected ErrAuthorizationDenied, got %v", err)
+	}
+	if trace.Allowed {
+		t.Fatal("expected denied trace when approval is missing")
+	}
+	if !trace.ApprovalRequired {
+		t.Fatal("expected approval_required=true")
+	}
+	if trace.ApprovalStatus != ApprovalStatusRequired {
+		t.Fatalf("unexpected approval status: %q", trace.ApprovalStatus)
+	}
+	if !strings.Contains(trace.DenyReason, "approval token is required") {
+		t.Fatalf("unexpected deny reason: %q", trace.DenyReason)
+	}
+}
+
+func TestAuthorizeCommandAllowsHighRiskCommandWithApprovedGrant(t *testing.T) {
+	t.Parallel()
+
+	cfg := validApprovalAuthzConfig()
+	approvalToken := mustIssueApprovalGrant(
+		t,
+		ApprovalDecisionApproved,
+		time.Now().UTC(),
+		30*time.Minute,
+		30*time.Minute,
+	)
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		ApprovalToken: approvalToken,
+	})
+	if err != nil {
+		t.Fatalf("authorize command: %v", err)
+	}
+	if !trace.Allowed {
+		t.Fatal("expected authorization to allow with approved grant")
+	}
+	if !trace.ApprovalRequired {
+		t.Fatal("expected approval_required=true")
+	}
+	if trace.ApprovalStatus != ApprovalStatusApproved {
+		t.Fatalf("unexpected approval status: %q", trace.ApprovalStatus)
+	}
+	if trace.ApprovalDecision != ApprovalDecisionApproved {
+		t.Fatalf("unexpected approval decision: %q", trace.ApprovalDecision)
+	}
+	if strings.TrimSpace(trace.ApprovalExpiresAt) == "" {
+		t.Fatal("expected approval expiry metadata")
+	}
+}
+
+func TestAuthorizeCommandDeniesHighRiskCommandWithRejectedGrant(t *testing.T) {
+	t.Parallel()
+
+	cfg := validApprovalAuthzConfig()
+	approvalToken := mustIssueApprovalGrant(
+		t,
+		ApprovalDecisionRejected,
+		time.Now().UTC(),
+		30*time.Minute,
+		30*time.Minute,
+	)
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		ApprovalToken: approvalToken,
+	})
+	if err == nil {
+		t.Fatal("expected deny error for rejected grant")
+	}
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected ErrAuthorizationDenied, got %v", err)
+	}
+	if trace.Allowed {
+		t.Fatal("expected denied trace")
+	}
+	if trace.ApprovalStatus != ApprovalStatusRejected {
+		t.Fatalf("unexpected approval status: %q", trace.ApprovalStatus)
+	}
+	if !strings.Contains(trace.DenyReason, "rejected") {
+		t.Fatalf("unexpected deny reason: %q", trace.DenyReason)
+	}
+}
+
+func TestAuthorizeCommandDeniesHighRiskCommandWithExpiredGrant(t *testing.T) {
+	t.Parallel()
+
+	cfg := validApprovalAuthzConfig()
+	approvalToken := mustIssueApprovalGrant(
+		t,
+		ApprovalDecisionApproved,
+		time.Now().UTC().Add(-2*time.Hour),
+		90*time.Minute,
+		30*time.Minute,
+	)
+
+	trace, err := cfg.AuthorizeCommand(CommandAuthorizationRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		ApprovalToken: approvalToken,
+	})
+	if err == nil {
+		t.Fatal("expected deny error for expired grant")
+	}
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected ErrAuthorizationDenied, got %v", err)
+	}
+	if trace.Allowed {
+		t.Fatal("expected denied trace")
+	}
+	if trace.ApprovalStatus != ApprovalStatusExpired {
+		t.Fatalf("unexpected approval status: %q", trace.ApprovalStatus)
+	}
+	if !strings.Contains(trace.DenyReason, "expired") {
+		t.Fatalf("unexpected deny reason: %q", trace.DenyReason)
 	}
 }
 
@@ -340,4 +483,55 @@ func validAuthzConfig() *Config {
 			},
 		},
 	}
+}
+
+func validApprovalAuthzConfig() *Config {
+	cfg := validAuthzConfig()
+	cfg.Roles["rotator"] = Role{
+		Capabilities: []string{"auth.rotate"},
+	}
+	cfg.Bindings = append(cfg.Bindings, Binding{
+		Principal: "alice",
+		Role:      "rotator",
+		Org:       "acme",
+		Workspace: "prod",
+	})
+	return cfg
+}
+
+func mustIssueApprovalGrant(
+	t *testing.T,
+	decision string,
+	now time.Time,
+	requestTTL time.Duration,
+	grantTTL time.Duration,
+) string {
+	t.Helper()
+
+	requestToken, err := CreateApprovalRequestToken(ApprovalRequestTokenRequest{
+		Principal:     "alice",
+		Command:       "auth rotate",
+		OrgName:       "acme",
+		WorkspaceName: "prod",
+		TTL:           requestTTL,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("create approval request token: %v", err)
+	}
+	grantToken, err := CreateApprovalGrantToken(ApprovalGrantTokenRequest{
+		RequestToken: requestToken.RequestToken,
+		Approver:     "security.lead",
+		Decision:     decision,
+		TTL:          grantTTL,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("create approval grant token: %v", err)
+	}
+	return grantToken.GrantToken
 }

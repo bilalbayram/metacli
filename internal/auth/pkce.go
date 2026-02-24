@@ -23,6 +23,17 @@ func NewPKCE() (verifier string, challenge string, err error) {
 }
 
 func BuildOAuthURL(appID string, redirectURI string, scopes []string, challenge string, version string) (string, error) {
+	return buildOAuthURL(appID, redirectURI, scopes, challenge, "", version)
+}
+
+func BuildOAuthURLWithState(appID string, redirectURI string, scopes []string, challenge string, state string, version string) (string, error) {
+	if strings.TrimSpace(state) == "" {
+		return "", errors.New("oauth state is required")
+	}
+	return buildOAuthURL(appID, redirectURI, scopes, challenge, state, version)
+}
+
+func buildOAuthURL(appID string, redirectURI string, scopes []string, challenge string, state string, version string) (string, error) {
 	if strings.TrimSpace(appID) == "" {
 		return "", errors.New("app id is required")
 	}
@@ -42,6 +53,9 @@ func BuildOAuthURL(appID string, redirectURI string, scopes []string, challenge 
 	values.Set("response_type", "code")
 	values.Set("code_challenge", challenge)
 	values.Set("code_challenge_method", "S256")
+	if strings.TrimSpace(state) != "" {
+		values.Set("state", state)
+	}
 	if len(scopes) > 0 {
 		values.Set("scope", strings.Join(scopes, ","))
 	}

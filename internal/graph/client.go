@@ -51,8 +51,8 @@ type Response struct {
 }
 
 type RateLimit struct {
-	AppUsage      map[string]any `json:"app_usage,omitempty"`
-	PageUsage     map[string]any `json:"page_usage,omitempty"`
+	AppUsage       map[string]any `json:"app_usage,omitempty"`
+	PageUsage      map[string]any `json:"page_usage,omitempty"`
 	AdAccountUsage map[string]any `json:"ad_account_usage,omitempty"`
 }
 
@@ -210,8 +210,8 @@ func (c *Client) doOnce(ctx context.Context, method string, version string, req 
 
 func parseRateLimit(headers http.Header) RateLimit {
 	return RateLimit{
-		AppUsage:      parseUsageHeader(headers.Get("X-App-Usage")),
-		PageUsage:     parseUsageHeader(headers.Get("X-Page-Usage")),
+		AppUsage:       parseUsageHeader(headers.Get("X-App-Usage")),
+		PageUsage:      parseUsageHeader(headers.Get("X-Page-Usage")),
 		AdAccountUsage: parseUsageHeader(headers.Get("X-Ad-Account-Usage")),
 	}
 }
@@ -233,23 +233,31 @@ func parseAPIError(statusCode int, payload map[string]any) *APIError {
 	rawErr, ok := payload["error"]
 	if !ok {
 		if statusCode == http.StatusTooManyRequests {
+			remediation := ClassifyRemediation(statusCode, http.StatusTooManyRequests, 0, "rate limited", nil)
 			return &APIError{
-				Type:       "rate_limit",
-				Code:       http.StatusTooManyRequests,
-				Message:    "rate limited",
-				StatusCode: statusCode,
-				Retryable:  true,
+				Type:        "rate_limit",
+				Code:        http.StatusTooManyRequests,
+				Message:     "rate limited",
+				StatusCode:  statusCode,
+				Retryable:   true,
+				Remediation: &remediation,
 			}
 		}
 		return nil
 	}
 	errMap, ok := rawErr.(map[string]any)
 	if !ok {
+		diagnostics := map[string]any{
+			"error": rawErr,
+		}
+		remediation := ClassifyRemediation(statusCode, 0, 0, "unparseable error payload", diagnostics)
 		return &APIError{
-			Type:       "unknown",
-			Message:    "unparseable error payload",
-			StatusCode: statusCode,
-			Retryable:  statusCode >= 500 || statusCode == http.StatusTooManyRequests,
+			Type:        "unknown",
+			Message:     "unparseable error payload",
+			StatusCode:  statusCode,
+			Retryable:   statusCode >= 500 || statusCode == http.StatusTooManyRequests,
+			Remediation: &remediation,
+			Diagnostics: diagnostics,
 		}
 	}
 
@@ -258,7 +266,9 @@ func parseAPIError(statusCode int, payload map[string]any) *APIError {
 	message, _ := errMap["message"].(string)
 	errType, _ := errMap["type"].(string)
 	trace, _ := errMap["fbtrace_id"].(string)
-	retryable := ShouldRetry(statusCode, errCode)
+	diagnostics := cloneAnyMap(errMap)
+	retryable := ShouldRetry(statusCode, errCode) || boolFromAny(errMap["is_transient"])
+	remediation := ClassifyRemediation(statusCode, errCode, subcode, message, diagnostics)
 
 	return &APIError{
 		Type:         errType,
@@ -268,6 +278,8 @@ func parseAPIError(statusCode int, payload map[string]any) *APIError {
 		FBTraceID:    trace,
 		StatusCode:   statusCode,
 		Retryable:    retryable,
+		Remediation:  &remediation,
+		Diagnostics:  diagnostics,
 	}
 }
 
@@ -300,6 +312,51 @@ func intFromAny(value any) int {
 		return parsed
 	default:
 		return 0
+	}
+}
+
+func boolFromAny(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case int:
+		return typed != 0
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(typed))
+		if err != nil {
+			return false
+		}
+		return parsed
+	default:
+		return false
+	}
+}
+
+func cloneAnyMap(source map[string]any) map[string]any {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneAny(value)
+	}
+	return cloned
+}
+
+func cloneAny(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		cloned := make([]any, 0, len(typed))
+		for _, item := range typed {
+			cloned = append(cloned, cloneAny(item))
+		}
+		return cloned
+	default:
+		return typed
 	}
 }
 

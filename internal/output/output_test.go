@@ -64,3 +64,63 @@ func TestJSONLEnvelopeLineCountForSlice(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONEnvelopeIncludesStructuredRemediation(t *testing.T) {
+	t.Parallel()
+
+	envelope, err := NewEnvelope("meta api post", false, nil, nil, nil, &ErrorInfo{
+		Type:         "GraphMethodException",
+		Code:         100,
+		ErrorSubcode: 33,
+		StatusCode:   400,
+		Message:      "Unsupported post request",
+		FBTraceID:    "trace-1",
+		Retryable:    false,
+		Remediation: &Remediation{
+			Category: "not_found",
+			Summary:  "Referenced object or edge does not exist for this request.",
+			Actions: []string{
+				"Check object IDs and endpoint path for typos.",
+			},
+			Fields: []string{"campaign_id"},
+		},
+		Diagnostics: map[string]any{
+			"error_user_title": "Unsupported post request",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new envelope: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := Write(&buf, "json", envelope); err != nil {
+		t.Fatalf("write json: %v", err)
+	}
+
+	decoded := map[string]any{}
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+
+	errorBody, ok := decoded["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", decoded["error"])
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "not_found" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+	if got := errorBody["status_code"]; got != float64(400) {
+		t.Fatalf("unexpected status_code %v", got)
+	}
+	diagnostics, ok := errorBody["diagnostics"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected diagnostics payload, got %T", errorBody["diagnostics"])
+	}
+	if got := diagnostics["error_user_title"]; got != "Unsupported post request" {
+		t.Fatalf("unexpected diagnostics payload %v", diagnostics)
+	}
+}

@@ -28,13 +28,23 @@ type Envelope struct {
 	Error           *ErrorInfo `json:"error,omitempty"`
 }
 
+type Remediation struct {
+	Category string   `json:"category"`
+	Summary  string   `json:"summary"`
+	Actions  []string `json:"actions,omitempty"`
+	Fields   []string `json:"fields,omitempty"`
+}
+
 type ErrorInfo struct {
-	Type         string `json:"type"`
-	Code         int    `json:"code"`
-	ErrorSubcode int    `json:"error_subcode"`
-	Message      string `json:"message"`
-	FBTraceID    string `json:"fbtrace_id,omitempty"`
-	Retryable    bool   `json:"retryable"`
+	Type         string         `json:"type"`
+	Code         int            `json:"code"`
+	ErrorSubcode int            `json:"error_subcode"`
+	StatusCode   int            `json:"status_code,omitempty"`
+	Message      string         `json:"message"`
+	FBTraceID    string         `json:"fbtrace_id,omitempty"`
+	Retryable    bool           `json:"retryable"`
+	Remediation  *Remediation   `json:"remediation,omitempty"`
+	Diagnostics  map[string]any `json:"diagnostics,omitempty"`
 }
 
 func NewEnvelope(command string, success bool, data any, paging any, rateLimit any, errorInfo *ErrorInfo) (Envelope, error) {

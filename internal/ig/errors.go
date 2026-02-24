@@ -35,7 +35,12 @@ func ClassifyPublishScheduleError(err error) error {
 
 	var apiErr *graph.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr
+		classified := *apiErr
+		if classified.Remediation == nil {
+			remediation := graph.ClassifyRemediation(classified.StatusCode, classified.Code, classified.ErrorSubcode, classified.Message, classified.Diagnostics)
+			classified.Remediation = &remediation
+		}
+		return &classified
 	}
 
 	var transientErr *graph.TransientError
@@ -51,6 +56,12 @@ func ClassifyPublishScheduleError(err error) error {
 			Message:    transientErr.Error(),
 			StatusCode: statusCode,
 			Retryable:  true,
+			Remediation: newIGRemediation(
+				graph.RemediationCategoryTransient,
+				"Temporary Instagram publish failure.",
+				"Retry with exponential backoff.",
+				"Capture diagnostics and fbtrace_id when retries keep failing.",
+			),
 		}
 	}
 
@@ -59,6 +70,11 @@ func ClassifyPublishScheduleError(err error) error {
 		Code:      igErrorCodeValidation,
 		Message:   err.Error(),
 		Retryable: false,
+		Remediation: newIGRemediation(
+			graph.RemediationCategoryValidation,
+			"Instagram publish request validation failed.",
+			"Fix the invalid schedule or publish input and rerun the command.",
+		),
 	}
 }
 
@@ -68,6 +84,11 @@ func newStateTransitionError(scheduleID string, from string, to string) *graph.A
 		Code:      igErrorCodeStateTransition,
 		Message:   fmt.Sprintf("schedule %s cannot transition from %s to %s", scheduleID, from, to),
 		Retryable: false,
+		Remediation: newIGRemediation(
+			graph.RemediationCategoryConflict,
+			"Requested schedule transition is invalid for current state.",
+			"List schedules and use a valid transition for the current status.",
+		),
 	}
 }
 
@@ -77,6 +98,11 @@ func newScheduleNotFoundError(scheduleID string) *graph.APIError {
 		Code:      igErrorCodeNotFound,
 		Message:   fmt.Sprintf("schedule %s not found", scheduleID),
 		Retryable: false,
+		Remediation: newIGRemediation(
+			graph.RemediationCategoryNotFound,
+			"Referenced schedule record does not exist.",
+			"Verify schedule_id and schedule state path before retrying.",
+		),
 	}
 }
 
@@ -86,6 +112,11 @@ func newIdempotencyConflictError(idempotencyKey string, scheduleID string) *grap
 		Code:      igErrorCodeIdempotencyConflict,
 		Message:   fmt.Sprintf("idempotency key %q already maps to schedule %s with different payload", idempotencyKey, scheduleID),
 		Retryable: false,
+		Remediation: newIGRemediation(
+			graph.RemediationCategoryConflict,
+			"Idempotency key is already bound to a different payload.",
+			"Reuse the original payload with this key or supply a new idempotency key.",
+		),
 	}
 }
 
@@ -95,6 +126,11 @@ func newMediaNotReadyError(statusCode string) *graph.APIError {
 		Code:      igErrorCodeMediaNotReady,
 		Message:   fmt.Sprintf("instagram media container is not ready for publish: status_code=%s", statusCode),
 		Retryable: true,
+		Remediation: newIGRemediation(
+			graph.RemediationCategoryTransient,
+			"Instagram media container is still processing.",
+			"Poll media status until status_code is FINISHED before publishing.",
+		),
 	}
 }
 
@@ -131,5 +167,21 @@ func isAllowedIdempotencyCharacter(char rune) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func newIGRemediation(category string, summary string, actions ...string) *graph.Remediation {
+	cleanActions := make([]string, 0, len(actions))
+	for _, action := range actions {
+		trimmed := strings.TrimSpace(action)
+		if trimmed == "" {
+			continue
+		}
+		cleanActions = append(cleanActions, trimmed)
+	}
+	return &graph.Remediation{
+		Category: category,
+		Summary:  strings.TrimSpace(summary),
+		Actions:  cleanActions,
 	}
 }

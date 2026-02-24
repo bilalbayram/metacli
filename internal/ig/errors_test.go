@@ -25,6 +25,12 @@ func TestClassifyPublishScheduleErrorMarksTransientRetryable(t *testing.T) {
 	if !apiErr.Retryable {
 		t.Fatalf("expected retryable=true, got %+v", apiErr)
 	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation contract, got %+v", apiErr)
+	}
+	if apiErr.Remediation.Category != graph.RemediationCategoryTransient {
+		t.Fatalf("unexpected remediation category %q", apiErr.Remediation.Category)
+	}
 }
 
 func TestClassifyPublishScheduleErrorWrapsValidationError(t *testing.T) {
@@ -40,6 +46,36 @@ func TestClassifyPublishScheduleErrorWrapsValidationError(t *testing.T) {
 	}
 	if apiErr.Retryable {
 		t.Fatalf("expected retryable=false, got %+v", apiErr)
+	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation contract, got %+v", apiErr)
+	}
+	if apiErr.Remediation.Category != graph.RemediationCategoryValidation {
+		t.Fatalf("unexpected remediation category %q", apiErr.Remediation.Category)
+	}
+}
+
+func TestClassifyPublishScheduleErrorAddsMissingRemediationToGraphError(t *testing.T) {
+	t.Parallel()
+
+	classified := ClassifyPublishScheduleError(&graph.APIError{
+		Type:         "GraphMethodException",
+		Code:         100,
+		ErrorSubcode: 33,
+		Message:      "Unsupported post request",
+		StatusCode:   400,
+		Retryable:    false,
+	})
+
+	apiErr, ok := classified.(*graph.APIError)
+	if !ok {
+		t.Fatalf("expected APIError, got %T", classified)
+	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation contract, got %+v", apiErr)
+	}
+	if apiErr.Remediation.Category != graph.RemediationCategoryNotFound {
+		t.Fatalf("unexpected remediation category %q", apiErr.Remediation.Category)
 	}
 }
 

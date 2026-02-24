@@ -277,6 +277,11 @@ Most commands emit the stable envelope with `contract_version: "1.0"`:
 - `rate_limit`
 - `error`
 
+Error payload contract (when `success=false`):
+- `type`, `code`, `error_subcode`, `status_code`, `message`, `fbtrace_id`, `retryable`
+- `remediation`: `category`, `summary`, `actions[]`, `fields[]`
+- `diagnostics`: raw Meta error diagnostics for classifier coverage gaps
+
 # Exit Codes
 
 - `1`: unknown failure

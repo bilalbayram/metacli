@@ -108,4 +108,96 @@ func TestClientNormalizesGraphError(t *testing.T) {
 	if apiErr.Retryable {
 		t.Fatalf("expected non-retryable error")
 	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation contract in api error: %#v", apiErr)
+	}
+	if apiErr.Remediation.Category != RemediationCategoryNotFound {
+		t.Fatalf("unexpected remediation category: %#v", apiErr.Remediation)
+	}
+	diagnostics := apiErr.Diagnostics
+	if diagnostics == nil {
+		t.Fatalf("expected diagnostics payload in api error: %#v", apiErr)
+	}
+	if got := diagnostics["fbtrace_id"]; got != "trace-1" {
+		t.Fatalf("unexpected fbtrace diagnostics value %v", got)
+	}
+}
+
+func TestClientClassifiesGraphValidationFromBlameFieldSpecs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid parameter","type":"OAuthException","code":100,"error_subcode":0,"fbtrace_id":"trace-2","error_data":{"blame_field_specs":[["targeting","geo_locations"],["daily_budget"]]}}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL)
+	client.InitialBackoff = 1 * time.Millisecond
+	client.MaxBackoff = 1 * time.Millisecond
+	client.Sleep = func(time.Duration) {}
+
+	_, err := client.Do(context.Background(), Request{
+		Method:  http.MethodGet,
+		Path:    "/bad-path",
+		Version: "v25.0",
+	})
+	if err == nil {
+		t.Fatal("expected graph error")
+	}
+
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation contract, got %#v", apiErr)
+	}
+	if apiErr.Remediation.Category != RemediationCategoryValidation {
+		t.Fatalf("unexpected remediation category %#v", apiErr.Remediation)
+	}
+	if len(apiErr.Remediation.Fields) != 2 {
+		t.Fatalf("unexpected remediation fields %#v", apiErr.Remediation.Fields)
+	}
+}
+
+func TestClientPreservesUnknownErrorDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"strange failure","type":"OAuthException","code":987654,"error_subcode":1234,"fbtrace_id":"trace-unknown","error_user_title":"Needs attention","error_user_msg":"Unexpected combination"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL)
+	client.InitialBackoff = 1 * time.Millisecond
+	client.MaxBackoff = 1 * time.Millisecond
+	client.Sleep = func(time.Duration) {}
+
+	_, err := client.Do(context.Background(), Request{
+		Method:  http.MethodGet,
+		Path:    "/bad-path",
+		Version: "v25.0",
+	})
+	if err == nil {
+		t.Fatal("expected graph error")
+	}
+
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if got := apiErr.FBTraceID; got != "trace-unknown" {
+		t.Fatalf("unexpected fbtrace_id %q", got)
+	}
+	if apiErr.Remediation == nil || apiErr.Remediation.Category != RemediationCategoryUnknown {
+		t.Fatalf("expected unknown remediation category, got %#v", apiErr.Remediation)
+	}
+	if apiErr.Diagnostics == nil {
+		t.Fatalf("expected diagnostics payload, got %#v", apiErr)
+	}
+	if got := apiErr.Diagnostics["error_user_title"]; got != "Needs attention" {
+		t.Fatalf("unexpected diagnostics payload: %#v", apiErr.Diagnostics)
+	}
 }

@@ -759,7 +759,7 @@ func TestOpsRunCommandReturnsPolicyExitOnPreflightViolations(t *testing.T) {
 	}
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	configBody := "schema_version: 1\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: system_user\n    token_ref: keychain://meta-marketing-cli/prod/token\n"
+	configBody := "schema_version: 2\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: system_user\n    token_ref: keychain://meta-marketing-cli/prod/token\n    app_id: app_123\n    app_secret_ref: keychain://meta-marketing-cli/prod/app_secret\n    auth_provider: system_user\n    auth_mode: both\n    scopes:\n      - ads_management\n      - business_management\n    issued_at: \"2026-01-15T00:00:00Z\"\n    expires_at: \"2026-12-31T23:59:59Z\"\n    last_validated_at: \"2026-01-16T00:00:00Z\"\n"
 	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
 		t.Fatalf("write config fixture: %v", err)
 	}
@@ -807,7 +807,7 @@ func TestOpsRunCommandPassesPreflightWithValidProfileConfig(t *testing.T) {
 	}
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	configBody := "schema_version: 1\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: user\n    app_id: app_123\n    token_ref: keychain://meta-marketing-cli/prod/token\n"
+	configBody := "schema_version: 2\ndefault_profile: prod\nprofiles:\n  prod:\n    domain: marketing\n    graph_version: v25.0\n    token_type: user\n    app_id: app_123\n    token_ref: keychain://meta-marketing-cli/prod/token\n    app_secret_ref: keychain://meta-marketing-cli/prod/app_secret\n    auth_provider: facebook_login\n    auth_mode: both\n    scopes:\n      - ads_read\n    issued_at: \"2026-01-15T00:00:00Z\"\n    expires_at: \"2026-12-31T23:59:59Z\"\n    last_validated_at: \"2026-01-16T00:00:00Z\"\n"
 	if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
 		t.Fatalf("write config fixture: %v", err)
 	}

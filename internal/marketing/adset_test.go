@@ -169,6 +169,70 @@ func TestAdSetSetStatusExecutesStatusMutation(t *testing.T) {
 	}
 }
 
+func TestAdSetResolveAccountIDReadsAdSetContext(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"account_id":"act_7777"}`,
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := NewAdSetService(client)
+
+	accountID, err := service.ResolveAccountID(context.Background(), "v25.0", "token-1", "secret-1", "91003")
+	if err != nil {
+		t.Fatalf("resolve account id: %v", err)
+	}
+	if accountID != "7777" {
+		t.Fatalf("unexpected resolved account id %q", accountID)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/91003" {
+		t.Fatalf("unexpected request path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "account_id" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+}
+
+func TestAdSetResolveAccountCurrencyReadsAdAccountContext(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"currency":"usd"}`,
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := NewAdSetService(client)
+
+	currency, err := service.ResolveAccountCurrency(context.Background(), "v25.0", "token-1", "secret-1", "act_2345")
+	if err != nil {
+		t.Fatalf("resolve account currency: %v", err)
+	}
+	if currency != "USD" {
+		t.Fatalf("unexpected currency %q", currency)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_2345" {
+		t.Fatalf("unexpected request path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "currency" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+}
+
 func TestAdSetCreateFailsWhenResponseMissingID(t *testing.T) {
 	t.Parallel()
 

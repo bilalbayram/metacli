@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/graph"
@@ -149,6 +151,77 @@ func (s *AdSetService) SetStatus(ctx context.Context, version string, token stri
 	return result, nil
 }
 
+func (s *AdSetService) ResolveAccountID(ctx context.Context, version string, token string, appSecret string, adSetID string) (string, error) {
+	if s == nil || s.Client == nil {
+		return "", errors.New("ad set service client is required")
+	}
+
+	normalizedAdSetID, err := normalizeGraphID("ad set id", adSetID)
+	if err != nil {
+		return "", err
+	}
+
+	response, err := s.Client.Do(ctx, graph.Request{
+		Method:  "GET",
+		Path:    normalizedAdSetID,
+		Version: strings.TrimSpace(version),
+		Query: map[string]string{
+			"fields": "account_id",
+		},
+		AccessToken: token,
+		AppSecret:   appSecret,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	accountID, err := decodeGraphIDField(response.Body, "account_id")
+	if err != nil {
+		return "", fmt.Errorf("ad set account context lookup failed: %w", err)
+	}
+	return normalizeAdAccountID(accountID)
+}
+
+func (s *AdSetService) ResolveAccountCurrency(ctx context.Context, version string, token string, appSecret string, accountID string) (string, error) {
+	if s == nil || s.Client == nil {
+		return "", errors.New("ad set service client is required")
+	}
+
+	normalizedAccountID, err := normalizeAdAccountID(accountID)
+	if err != nil {
+		return "", err
+	}
+
+	path := fmt.Sprintf("act_%s", normalizedAccountID)
+	response, err := s.Client.Do(ctx, graph.Request{
+		Method:  "GET",
+		Path:    path,
+		Version: strings.TrimSpace(version),
+		Query: map[string]string{
+			"fields": "currency",
+		},
+		AccessToken: token,
+		AppSecret:   appSecret,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	currencyRaw, exists := response.Body["currency"]
+	if !exists {
+		return "", errors.New("ad account currency lookup response did not include currency")
+	}
+	currency, ok := currencyRaw.(string)
+	if !ok {
+		return "", fmt.Errorf("ad account currency lookup response field currency has unsupported type %T", currencyRaw)
+	}
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if currency == "" {
+		return "", errors.New("ad account currency lookup response included empty currency")
+	}
+	return currency, nil
+}
+
 func normalizeAdSetStatus(value string) (string, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(value))
 	switch normalized {
@@ -170,4 +243,30 @@ func normalizeAdSetMutationParams(params map[string]string) (map[string]string, 
 		return nil, errors.New("ad set mutation payload cannot be empty")
 	}
 	return normalized, nil
+}
+
+func decodeGraphIDField(body map[string]any, field string) (string, error) {
+	if len(body) == 0 {
+		return "", fmt.Errorf("response missing required field %q", field)
+	}
+	value, exists := body[field]
+	if !exists || value == nil {
+		return "", fmt.Errorf("response missing required field %q", field)
+	}
+
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return "", fmt.Errorf("response field %q is empty", field)
+		}
+		return trimmed, nil
+	case float64:
+		if math.Trunc(typed) != typed {
+			return "", fmt.Errorf("response field %q must be an integer id value", field)
+		}
+		return strconv.FormatInt(int64(typed), 10), nil
+	default:
+		return "", fmt.Errorf("response field %q has unsupported type %T", field, value)
+	}
 }

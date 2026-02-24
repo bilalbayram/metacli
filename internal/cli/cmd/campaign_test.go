@@ -768,6 +768,159 @@ func TestCampaignUpdateExecutesMutation(t *testing.T) {
 	}
 }
 
+func TestCampaignUpdateRunsRequirementsResolverChecks(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "required_context":{"*":["account_id"]},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+					TokenType:    "user",
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"update",
+		"--campaign-id", "777",
+		"--params", "name=Updated Name",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "requirements resolution blocked mutation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "profile context is missing required field \"account_id\"") {
+		t.Fatalf("expected account_id context violation, got %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on blocking requirements violations")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign update" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestCampaignUpdateDoesNotForceCreateRequiredOrInjectDefaults(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"success":true}`,
+	}
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"update",
+		"--campaign-id", "777",
+		"--params", "name=Updated Name",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign update: %v", err)
+	}
+
+	if stub.calls != 1 {
+		t.Fatalf("expected one graph call, got %d", stub.calls)
+	}
+	form, err := url.ParseQuery(stub.lastBody)
+	if err != nil {
+		t.Fatalf("parse form body: %v", err)
+	}
+	if got := form.Get("name"); got != "Updated Name" {
+		t.Fatalf("unexpected name %q", got)
+	}
+	if got := form.Get("status"); got != "" {
+		t.Fatalf("expected status to remain unset for update payload, got %q", got)
+	}
+	if got := form.Get("objective"); got != "" {
+		t.Fatalf("expected objective to remain unset for update payload, got %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign update")
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
 func TestCampaignUpdateFailsWithoutBudgetConfirmation(t *testing.T) {
 	wasCalled := false
 	schemaDir := writeCampaignSchemaPack(t)

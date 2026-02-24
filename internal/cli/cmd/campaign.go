@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	campaignMutationLintPath      = "act_0/campaigns"
-	campaignRequirementsMutation  = "campaigns.post"
-	campaignPayloadSourceInput    = "input"
-	campaignPayloadSourceRule     = "requirements.inject_defaults"
-	campaignPayloadSourceClone    = "clone.source_payload"
-	campaignPayloadSourceOverride = "clone.override"
+	campaignMutationLintPath                          = "act_0/campaigns"
+	campaignRequirementsMutation                      = "campaigns.post"
+	campaignRequirementsViolationMissingRequiredParam = "missing_required_param"
+	campaignPayloadSourceInput                        = "input"
+	campaignPayloadSourceRule                         = "requirements.inject_defaults"
+	campaignPayloadSourceClone                        = "clone.source_payload"
+	campaignPayloadSourceOverride                     = "clone.override"
 )
 
 var (
@@ -285,6 +286,7 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 		paramsRaw           string
 		jsonRaw             string
 		schemaDir           string
+		rulesDir            string
 		confirmBudgetChange bool
 	)
 
@@ -320,6 +322,26 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 			if err := lintCampaignMutation(linter, form); err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign update", err)
 			}
+			resolution, err := resolveCampaignMutationRequirements(
+				creds,
+				resolvedVersion,
+				schemaDir,
+				rulesDir,
+				campaignRequirementsMutation,
+				"",
+				form,
+			)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign update", err)
+			}
+			if blocked, summary := campaignUpdateRequirementsBlockSummary(resolution); blocked {
+				return writeCommandError(
+					cmd,
+					runtime,
+					"meta campaign update",
+					fmt.Errorf("campaign requirements resolution blocked mutation: %s", summary),
+				)
+			}
 
 			result, err := campaignNewService(campaignNewGraphClient()).Update(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignUpdateInput{
 				CampaignID: campaignID,
@@ -339,6 +361,7 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
 }
@@ -678,6 +701,33 @@ func campaignMutationChangesBudget(params map[string]string) bool {
 		}
 	}
 	return false
+}
+
+func campaignUpdateRequirementsBlockSummary(resolution requirements.Resolution) (bool, string) {
+	messages := make([]string, 0, len(resolution.Violations)+len(resolution.Drift))
+	blocking := false
+
+	for _, violation := range resolution.Violations {
+		if violation.Code == campaignRequirementsViolationMissingRequiredParam {
+			continue
+		}
+		if strings.TrimSpace(violation.Message) != "" {
+			messages = append(messages, violation.Message)
+		}
+		if violation.Severity == requirements.SeverityError {
+			blocking = true
+		}
+	}
+	for _, drift := range resolution.Drift {
+		if strings.TrimSpace(drift.Message) != "" {
+			messages = append(messages, drift.Message)
+		}
+		if drift.Severity == requirements.SeverityError {
+			blocking = true
+		}
+	}
+
+	return blocking, strings.Join(messages, "; ")
 }
 
 func campaignPayloadProvenance(final map[string]string, injected map[string]string, baseSources map[string]string, fallbackSource string) map[string]string {

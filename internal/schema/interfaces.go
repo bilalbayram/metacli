@@ -16,4 +16,5 @@ type SchemaProvider interface {
 	GetPack(domain string, version string) (*Pack, error)
 	ListPacks() ([]PackRef, error)
 	Sync(ctx context.Context, channel string) ([]PackRef, error)
+	SyncWithRequest(ctx context.Context, request SyncRequest) (SyncResult, error)
 }

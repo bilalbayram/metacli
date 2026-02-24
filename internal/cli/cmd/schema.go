@@ -24,7 +24,7 @@ func newSchemaListCommand(runtime Runtime) *cobra.Command {
 			provider := schema.NewProvider(schemaDir, "", "")
 			packs, err := provider.ListPacks()
 			if err != nil {
-				return err
+				return writeCommandError(cmd, runtime, "meta schema list", err)
 			}
 			return writeSuccess(cmd, runtime, "meta schema list", packs, nil, nil)
 		},
@@ -35,26 +35,39 @@ func newSchemaListCommand(runtime Runtime) *cobra.Command {
 
 func newSchemaSyncCommand(runtime Runtime) *cobra.Command {
 	var (
-		channel     string
-		schemaDir   string
-		manifestURL string
-		publicKey   string
+		channel             string
+		schemaDir           string
+		manifestURL         string
+		publicKey           string
+		remoteFailurePolicy string
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync schema packs from signed remote manifest",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			provider := schema.NewProvider(schemaDir, manifestURL, publicKey)
-			packs, err := provider.Sync(cmd.Context(), channel)
-			if err != nil {
-				return err
+			if err := schema.ValidateRemoteFailurePolicy(remoteFailurePolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta schema sync", err)
 			}
-			return writeSuccess(cmd, runtime, "meta schema sync", packs, nil, nil)
+			provider := schema.NewProvider(schemaDir, manifestURL, publicKey)
+			result, err := provider.SyncWithRequest(cmd.Context(), schema.SyncRequest{
+				Channel:             channel,
+				RemoteFailurePolicy: remoteFailurePolicy,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta schema sync", err)
+			}
+			return writeSuccess(cmd, runtime, "meta schema sync", result, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&channel, "channel", "stable", "Schema channel to sync")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
 	cmd.Flags().StringVar(&manifestURL, "manifest-url", schema.DefaultManifestURL, "Signed schema manifest URL")
 	cmd.Flags().StringVar(&publicKey, "public-key", schema.DefaultManifestPubKey, "Base64 Ed25519 public key for manifest verification")
+	cmd.Flags().StringVar(
+		&remoteFailurePolicy,
+		"remote-failure-policy",
+		schema.SyncRemoteFailurePolicyHardFail,
+		"Policy when remote sync fails: hard-fail|pinned-local",
+	)
 	return cmd
 }

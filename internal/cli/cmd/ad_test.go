@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -391,7 +392,7 @@ func TestAdCloneExecutesReadSanitizeValidateCreateFlow(t *testing.T) {
 			if got := form.Get("adset_id"); got != "adset_9" {
 				t.Fatalf("unexpected adset_id %q", got)
 			}
-			if got := form.Get("creative"); got != `{"id":"creative_9"}` {
+			if got := form.Get("creative"); got != `{"creative_id":"creative_9"}` {
 				t.Fatalf("unexpected creative payload %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "clone_ad_2"})
@@ -455,6 +456,134 @@ func TestAdCloneExecutesReadSanitizeValidateCreateFlow(t *testing.T) {
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAdCloneReturnsRemediationForIncompleteClonePayload(t *testing.T) {
+	schemaDir := writeAdSchemaPack(t)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount != 1 {
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected read method %s", r.Method)
+		}
+		if r.URL.Path != "/v25.0/source_ad_3" {
+			t.Fatalf("unexpected read path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("fields"); got != "name,adset_id,creative" {
+			t.Fatalf("unexpected read fields %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":     "Source Ad",
+			"adset_id": "adset_11",
+		})
+	}))
+	defer server.Close()
+
+	useAdDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAdCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"clone",
+		"--source-ad-id", "source_ad_3",
+		"--account-id", "222",
+		"--fields", "name",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "ad clone payload is incomplete") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only source read request, got %d", requestCount)
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta ad clone" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ad_validation_error" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	if got := errorBody["code"]; got != float64(422100) {
+		t.Fatalf("unexpected error code %v", got)
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "validation" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+	fieldsAny, ok := remediation["fields"].([]any)
+	if !ok {
+		t.Fatalf("expected remediation fields, got %T", remediation["fields"])
+	}
+	fields := make([]string, 0, len(fieldsAny))
+	for _, field := range fieldsAny {
+		typed, ok := field.(string)
+		if !ok {
+			t.Fatalf("expected string remediation field, got %T", field)
+		}
+		fields = append(fields, typed)
+	}
+	if !slices.Equal(fields, []string{"creative"}) {
+		t.Fatalf("unexpected remediation fields %v", fields)
+	}
+	actionsAny, ok := remediation["actions"].([]any)
+	if !ok {
+		t.Fatalf("expected remediation actions, got %T", remediation["actions"])
+	}
+	actions := make([]string, 0, len(actionsAny))
+	for _, action := range actionsAny {
+		typed, ok := action.(string)
+		if !ok {
+			t.Fatalf("expected string remediation action, got %T", action)
+		}
+		actions = append(actions, typed)
+	}
+	if !slices.Contains(actions, "Include the missing fields in --fields or provide overrides via --params/--json.") {
+		t.Fatalf("unexpected remediation actions %v", actions)
 	}
 }
 

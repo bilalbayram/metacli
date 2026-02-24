@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -23,6 +24,19 @@ var DefaultAdCloneFields = []string{
 	"adset_id",
 	"creative",
 }
+
+var requiredAdCloneDependencyFields = []string{
+	"adset_id",
+	"creative",
+}
+
+const (
+	adValidationErrorType                 = "ad_validation_error"
+	adValidationCodeCloneIncomplete       = 422100
+	adValidationCodeCloneDependency       = 422101
+	adValidationCodeCloneSourceAmbiguous  = 422102
+	adValidationCodeClonePayloadNormalize = 422103
+)
 
 var immutableAdCloneFields = map[string]struct{}{
 	"id":                {},
@@ -232,9 +246,20 @@ func (s *AdService) Clone(ctx context.Context, version string, token string, app
 		clonePayload[key] = value
 	}
 	if len(clonePayload) == 0 {
-		return nil, errors.New("ad clone payload is empty after sanitization")
+		return nil, newAdValidationError(
+			adValidationCodeCloneIncomplete,
+			"ad clone payload is empty after sanitization",
+			[]string{"fields", "params", "json"},
+			"Ad clone payload has no mutable fields to create a new ad.",
+			"Include mutable source fields via --fields (for example: name,status,adset_id,creative).",
+			"Provide override params via --params/--json for required create fields.",
+		)
 	}
-	if err := s.validateDependencies(ctx, version, token, appSecret, clonePayload); err != nil {
+	normalizedClonePayload, err := normalizeAdClonePayload(clonePayload)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateDependencies(ctx, version, token, appSecret, normalizedClonePayload); err != nil {
 		return nil, err
 	}
 
@@ -243,7 +268,7 @@ func (s *AdService) Clone(ctx context.Context, version string, token string, app
 		Method:      "POST",
 		Path:        createPath,
 		Version:     strings.TrimSpace(version),
-		Form:        clonePayload,
+		Form:        normalizedClonePayload,
 		AccessToken: token,
 		AppSecret:   appSecret,
 	})
@@ -261,7 +286,7 @@ func (s *AdService) Clone(ctx context.Context, version string, token string, app
 		SourceAdID:    sourceAdID,
 		AdID:          adID,
 		RequestPath:   createPath,
-		Payload:       clonePayload,
+		Payload:       normalizedClonePayload,
 		RemovedFields: removedFields,
 		Response:      createResponse.Body,
 	}, nil
@@ -391,6 +416,13 @@ func normalizeAdCloneFields(fields []string) ([]string, error) {
 	if len(out) == 0 {
 		return nil, errors.New("clone fields are required")
 	}
+	for _, dependencyField := range requiredAdCloneDependencyFields {
+		if _, exists := seen[dependencyField]; exists {
+			continue
+		}
+		seen[dependencyField] = struct{}{}
+		out = append(out, dependencyField)
+	}
 	return out, nil
 }
 
@@ -401,11 +433,29 @@ func sanitizeAdClonePayload(source map[string]any) (map[string]string, []string,
 
 	payload := map[string]string{}
 	removed := make([]string, 0)
-	for key, value := range source {
+	keys := make([]string, 0, len(source))
+	for key := range source {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	seenNormalizedKeys := map[string]struct{}{}
+	for _, key := range keys {
+		value := source[key]
 		normalizedKey := strings.TrimSpace(key)
 		if normalizedKey == "" {
 			continue
 		}
+		if _, exists := seenNormalizedKeys[normalizedKey]; exists {
+			return nil, nil, newAdValidationError(
+				adValidationCodeCloneSourceAmbiguous,
+				fmt.Sprintf("ad clone source payload contains duplicate field %q after normalization", normalizedKey),
+				[]string{normalizedKey},
+				"Source ad payload cannot be normalized deterministically.",
+				"Adjust requested --fields so each normalized field appears once.",
+			)
+		}
+		seenNormalizedKeys[normalizedKey] = struct{}{}
 		if _, immutable := immutableAdCloneFields[normalizedKey]; immutable {
 			removed = append(removed, normalizedKey)
 			continue
@@ -423,4 +473,139 @@ func sanitizeAdClonePayload(source map[string]any) (map[string]string, []string,
 
 	sort.Strings(removed)
 	return payload, removed, nil
+}
+
+func normalizeAdClonePayload(payload map[string]string) (map[string]string, error) {
+	normalized, err := normalizeAdMutationParams(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	missingFields := make([]string, 0, len(requiredAdCloneDependencyFields))
+	for _, field := range requiredAdCloneDependencyFields {
+		value, exists := normalized[field]
+		if !exists || strings.TrimSpace(value) == "" {
+			missingFields = append(missingFields, field)
+		}
+	}
+	if len(missingFields) > 0 {
+		sort.Strings(missingFields)
+		return nil, newAdValidationError(
+			adValidationCodeCloneIncomplete,
+			fmt.Sprintf("ad clone payload is incomplete: missing dependency fields %s", strings.Join(missingFields, ", ")),
+			missingFields,
+			"Ad clone requires both adset and creative references.",
+			"Include the missing fields in --fields or provide overrides via --params/--json.",
+			"Verify the source ad has stable adset and creative links before cloning.",
+		)
+	}
+
+	adSetID, err := normalizeGraphID("ad set id", normalized["adset_id"])
+	if err != nil {
+		return nil, newAdValidationError(
+			adValidationCodeCloneDependency,
+			err.Error(),
+			[]string{"adset_id"},
+			"Ad clone dependency preflight failed for adset_id.",
+			"Set adset_id to a valid single graph id token.",
+		)
+	}
+
+	creativeID, err := extractCreativeReferenceID(normalized["creative"])
+	if err != nil {
+		return nil, newAdValidationError(
+			adValidationCodeCloneDependency,
+			err.Error(),
+			[]string{"creative"},
+			"Ad clone dependency preflight failed for creative.",
+			"Set creative to a graph id or JSON object containing creative_id/id.",
+		)
+	}
+	creativeReference, err := encodeGraphValue(map[string]string{"creative_id": creativeID})
+	if err != nil {
+		return nil, newAdValidationError(
+			adValidationCodeClonePayloadNormalize,
+			fmt.Sprintf("encode normalized creative reference: %v", err),
+			[]string{"creative"},
+			"Ad clone failed while normalizing creative payload.",
+			"Retry with a plain creative_id value in --json to avoid nested serialization issues.",
+		)
+	}
+
+	normalized["adset_id"] = adSetID
+	normalized["creative"] = creativeReference
+
+	if statusRaw, exists := normalized["status"]; exists {
+		normalizedStatus, err := normalizeAdStatus(statusRaw)
+		if err != nil {
+			return nil, newAdValidationError(
+				adValidationCodeClonePayloadNormalize,
+				err.Error(),
+				[]string{"status"},
+				"Ad clone status normalization failed.",
+				"Use ACTIVE or PAUSED for status overrides.",
+			)
+		}
+		normalized["status"] = normalizedStatus
+	}
+
+	return normalized, nil
+}
+
+func newAdValidationError(code int, message string, fields []string, summary string, actions ...string) *graph.APIError {
+	return &graph.APIError{
+		Type:       adValidationErrorType,
+		Code:       code,
+		Message:    strings.TrimSpace(message),
+		StatusCode: http.StatusUnprocessableEntity,
+		Retryable:  false,
+		Remediation: &graph.Remediation{
+			Category: graph.RemediationCategoryValidation,
+			Summary:  strings.TrimSpace(summary),
+			Actions:  normalizeRemediationActions(actions),
+			Fields:   normalizeRemediationFields(fields),
+		},
+	}
+}
+
+func normalizeRemediationActions(actions []string) []string {
+	if len(actions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(actions))
+	for _, action := range actions {
+		trimmed := strings.TrimSpace(action)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeRemediationFields(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		trimmed := strings.TrimSpace(field)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }

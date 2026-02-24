@@ -3,6 +3,7 @@ package marketing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -258,7 +259,7 @@ func TestAdCloneReadsSanitizesValidatesAndCreates(t *testing.T) {
 			if got := form.Get("account_id"); got != "" {
 				t.Fatalf("immutable account_id should not be cloned, got %q", got)
 			}
-			if got := form.Get("creative"); got != `{"id":"creative_2"}` {
+			if got := form.Get("creative"); got != `{"creative_id":"creative_2"}` {
 				t.Fatalf("unexpected creative payload %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "clone_ad_11"})
@@ -294,6 +295,9 @@ func TestAdCloneReadsSanitizesValidatesAndCreates(t *testing.T) {
 	}
 	if result.AdID != "clone_ad_11" {
 		t.Fatalf("unexpected ad id %q", result.AdID)
+	}
+	if got := result.Payload["creative"]; got != `{"creative_id":"creative_2"}` {
+		t.Fatalf("unexpected normalized creative payload %q", got)
 	}
 	if !slices.Contains(result.RemovedFields, "id") {
 		t.Fatalf("expected removed fields to contain id, got %v", result.RemovedFields)
@@ -341,8 +345,80 @@ func TestAdCloneFailsWhenOverrideBreaksCreativeReference(t *testing.T) {
 	if !strings.Contains(err.Error(), "creative reference must include creative_id or id") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if requestCount != 2 {
-		t.Fatalf("expected source read + adset validation requests, got %d", requestCount)
+	var apiErr *graph.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected graph API error, got %T", err)
+	}
+	if apiErr.Code != adValidationCodeCloneDependency {
+		t.Fatalf("unexpected error code %d", apiErr.Code)
+	}
+	if apiErr.Remediation == nil || !slices.Equal(apiErr.Remediation.Fields, []string{"creative"}) {
+		t.Fatalf("unexpected remediation fields %#v", apiErr.Remediation)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only source read request, got %d", requestCount)
+	}
+}
+
+func TestAdCloneReturnsRemediationWhenSourceMissingCreative(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount != 1 {
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+		if got := r.URL.Query().Get("fields"); got != "id,name,adset_id,creative" {
+			t.Fatalf("unexpected clone fields %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":       "source_ad_10",
+			"name":     "Source Ad",
+			"adset_id": "adset_10",
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	service := NewAdService(client)
+
+	_, err := service.Clone(context.Background(), "v25.0", "token-1", "", AdCloneInput{
+		SourceAdID:      "source_ad_10",
+		TargetAccountID: "321",
+		Fields:          []string{"id", "name"},
+	})
+	if err == nil {
+		t.Fatal("expected clone error")
+	}
+
+	var apiErr *graph.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected graph API error, got %T", err)
+	}
+	if apiErr.Type != adValidationErrorType {
+		t.Fatalf("unexpected error type %q", apiErr.Type)
+	}
+	if apiErr.Code != adValidationCodeCloneIncomplete {
+		t.Fatalf("unexpected error code %d", apiErr.Code)
+	}
+	if apiErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("unexpected status code %d", apiErr.StatusCode)
+	}
+	if apiErr.Remediation == nil {
+		t.Fatalf("expected remediation details, got nil")
+	}
+	if apiErr.Remediation.Category != graph.RemediationCategoryValidation {
+		t.Fatalf("unexpected remediation category %q", apiErr.Remediation.Category)
+	}
+	if !slices.Equal(apiErr.Remediation.Fields, []string{"creative"}) {
+		t.Fatalf("unexpected remediation fields %v", apiErr.Remediation.Fields)
+	}
+	if !slices.Contains(apiErr.Remediation.Actions, "Include the missing fields in --fields or provide overrides via --params/--json.") {
+		t.Fatalf("unexpected remediation actions %v", apiErr.Remediation.Actions)
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected only source read request, got %d", requestCount)
 	}
 }
 

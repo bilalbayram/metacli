@@ -291,6 +291,7 @@ func useSmokeDependencies(
 	runnerFn func(smoke.GraphClient) *smoke.Runner,
 ) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := smokeLoadProfileCredentials
 	originalRunner := smokeNewRunner
 	originalClient := smokeNewGraphClient

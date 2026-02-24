@@ -654,6 +654,7 @@ func TestAdResumeReturnsStructuredGraphError(t *testing.T) {
 
 func useAdDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := adLoadProfileCredentials
 	originalClient := adNewGraphClient
 	t.Cleanup(func() {

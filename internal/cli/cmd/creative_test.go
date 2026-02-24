@@ -247,6 +247,7 @@ func TestCreativeCreateFailsLintValidation(t *testing.T) {
 
 func useCreativeDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := creativeLoadProfileCredentials
 	originalClient := creativeNewGraphClient
 	t.Cleanup(func() {

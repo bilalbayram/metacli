@@ -630,6 +630,7 @@ func TestAdsetResumeReturnsStructuredGraphError(t *testing.T) {
 
 func useAdsetDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := adsetLoadProfileCredentials
 	originalClient := adsetNewGraphClient
 	t.Cleanup(func() {

@@ -262,14 +262,6 @@ func resolveStatePath(path string) (string, error) {
 	return ops.DefaultStatePath()
 }
 
-func resolveResourceLedgerPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path != "" {
-		return path, nil
-	}
-	return ops.DefaultResourceLedgerPath()
-}
-
 func resolveOpsCleanupProfileAndVersion(runtime Runtime, profile string, version string) (*ProfileCredentials, string, error) {
 	resolvedProfile := strings.TrimSpace(profile)
 	if resolvedProfile == "" {

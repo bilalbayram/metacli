@@ -440,6 +440,7 @@ func TestAudienceDeleteFailsWithoutAudienceID(t *testing.T) {
 
 func useAudienceDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := audienceLoadProfileCredentials
 	originalClient := audienceNewGraphClient
 	t.Cleanup(func() {

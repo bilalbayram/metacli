@@ -23,9 +23,9 @@ type trackedResourceInput struct {
 }
 
 func persistTrackedResource(input trackedResourceInput) error {
-	ledgerPath := strings.TrimSpace(os.Getenv(resourceLedgerPathEnv))
-	if ledgerPath == "" {
-		return nil
+	ledgerPath, err := resolveResourceLedgerPath("")
+	if err != nil {
+		return fmt.Errorf("resolve resource ledger path: %w", err)
 	}
 
 	entry := ops.TrackedResource{
@@ -43,6 +43,20 @@ func persistTrackedResource(input trackedResourceInput) error {
 		return fmt.Errorf("persist tracked resource in %s: %w", ledgerPath, err)
 	}
 	return nil
+}
+
+func resolveResourceLedgerPath(path string) (string, error) {
+	resolvedPath := strings.TrimSpace(path)
+	if resolvedPath != "" {
+		return resolvedPath, nil
+	}
+
+	envPath := strings.TrimSpace(os.Getenv(resourceLedgerPathEnv))
+	if envPath != "" {
+		return envPath, nil
+	}
+
+	return ops.DefaultResourceLedgerPath()
 }
 
 func normalizeTrackedResourceMetadata(metadata map[string]string) map[string]string {

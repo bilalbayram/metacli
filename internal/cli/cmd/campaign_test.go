@@ -1554,6 +1554,7 @@ func TestCampaignCloneFailsOnUnknownField(t *testing.T) {
 
 func useCampaignDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
+	configureTestResourceLedgerPath(t)
 	originalLoad := campaignLoadProfileCredentials
 	originalClient := campaignNewGraphClient
 	t.Cleanup(func() {

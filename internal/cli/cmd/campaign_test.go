@@ -21,7 +21,7 @@ func TestNewCampaignCommandIncludesLifecycleSubcommands(t *testing.T) {
 
 	cmd := NewCampaignCommand(Runtime{})
 
-	for _, name := range []string{"create", "update", "pause", "resume", "clone"} {
+	for _, name := range []string{"create", "resolve-requirements", "update", "pause", "resume", "clone"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s subcommand: %v", name, err)
@@ -273,6 +273,238 @@ func TestCampaignCreateFailsLintValidation(t *testing.T) {
 	}
 	if wasCalled {
 		t.Fatal("graph client should not execute on lint failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign create" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if envelope["success"] != false {
+		t.Fatalf("expected success=false, got %v", envelope["success"])
+	}
+}
+
+func TestCampaignResolveRequirementsReturnsResolvedPayloadPlan(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "required_context":{"*":["account_id"]},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+					TokenType:    "user",
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"resolve-requirements",
+		"--account-id", "1234",
+		"--params", "name=Launch,objective=OUTCOME_SALES",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign resolve-requirements: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign resolve-requirements")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "ok" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	resolution, ok := data["resolution"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected resolution payload, got %T", data["resolution"])
+	}
+	if got := resolution["blocking"]; got != false {
+		t.Fatalf("expected blocking=false, got %v", got)
+	}
+	payload, ok := resolution["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload plan, got %T", resolution["payload"])
+	}
+	finalPayload, ok := payload["final"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final payload map, got %T", payload["final"])
+	}
+	if got := finalPayload["status"]; got != "PAUSED" {
+		t.Fatalf("expected injected status=PAUSED, got %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignResolveRequirementsReturnsViolations(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "required_context":{"system_user":["business_id"]},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+					TokenType:    "system_user",
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"resolve-requirements",
+		"--account-id", "1234",
+		"--params", "name=Launch",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign resolve-requirements: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign resolve-requirements")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object data payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "violations" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	resolution, ok := data["resolution"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected resolution payload, got %T", data["resolution"])
+	}
+	if got := resolution["blocking"]; got != true {
+		t.Fatalf("expected blocking=true, got %v", got)
+	}
+	violations, ok := resolution["violations"].([]any)
+	if !ok {
+		t.Fatalf("expected violations list, got %T", resolution["violations"])
+	}
+	if len(violations) == 0 {
+		t.Fatal("expected non-empty violations")
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignCreateFailsOnBlockingRequirements(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Launch",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "requirements resolution blocked mutation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "missing required param \"objective\"") {
+		t.Fatalf("expected objective violation in error, got %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on requirements violations")
 	}
 	if output.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", output.String())
@@ -947,4 +1179,18 @@ func writeCampaignSchemaPack(t *testing.T) string {
 		t.Fatalf("write schema pack: %v", err)
 	}
 	return schemaDir
+}
+
+func writeCampaignRuntimeRulePack(t *testing.T, body string) string {
+	t.Helper()
+	rulesDir := t.TempDir()
+	marketingDir := filepath.Join(rulesDir, config.DefaultDomain)
+	if err := os.MkdirAll(marketingDir, 0o755); err != nil {
+		t.Fatalf("create rules dir: %v", err)
+	}
+	packPath := filepath.Join(marketingDir, config.DefaultGraphVersion+".json")
+	if err := os.WriteFile(packPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write runtime rule pack: %v", err)
+	}
+	return rulesDir
 }

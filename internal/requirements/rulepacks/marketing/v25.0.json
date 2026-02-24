@@ -1,0 +1,25 @@
+{
+  "domain": "marketing",
+  "version": "v25.0",
+  "mutations": {
+    "campaigns.post": {
+      "add_required": [
+        "name",
+        "objective",
+        "status"
+      ],
+      "forbidden_params": [
+        "legacy_param"
+      ],
+      "inject_defaults": {
+        "status": "PAUSED"
+      },
+      "required_context": {
+        "system_user": [
+          "business_id"
+        ]
+      },
+      "drift_policy": "error"
+    }
+  }
+}

@@ -9,12 +9,14 @@ import (
 	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/marketing"
+	"github.com/bilalbayram/metacli/internal/requirements"
 	"github.com/bilalbayram/metacli/internal/schema"
 	"github.com/spf13/cobra"
 )
 
 const (
-	campaignMutationLintPath = "act_0/campaigns"
+	campaignMutationLintPath     = "act_0/campaigns"
+	campaignRequirementsMutation = "campaigns.post"
 )
 
 var (
@@ -28,6 +30,7 @@ var (
 	campaignNewService = func(client *graph.Client) *marketing.Service {
 		return marketing.NewCampaignService(client)
 	}
+	campaignLoadRulePack        = requirements.LoadRulePack
 	campaignBudgetGuardrailKeys = map[string]struct{}{
 		"daily_budget":    {},
 		"lifetime_budget": {},
@@ -43,6 +46,7 @@ func NewCampaignCommand(runtime Runtime) *cobra.Command {
 		},
 	}
 	campaignCmd.AddCommand(newCampaignCreateCommand(runtime))
+	campaignCmd.AddCommand(newCampaignResolveRequirementsCommand(runtime))
 	campaignCmd.AddCommand(newCampaignUpdateCommand(runtime))
 	campaignCmd.AddCommand(newCampaignPauseCommand(runtime))
 	campaignCmd.AddCommand(newCampaignResumeCommand(runtime))
@@ -58,6 +62,7 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 		paramsRaw           string
 		jsonRaw             string
 		schemaDir           string
+		rulesDir            string
 		confirmBudgetChange bool
 	)
 
@@ -94,9 +99,30 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
 			}
 
+			resolution, err := resolveCampaignMutationRequirements(
+				creds,
+				resolvedVersion,
+				schemaDir,
+				rulesDir,
+				campaignRequirementsMutation,
+				accountID,
+				form,
+			)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign create", err)
+			}
+			if resolution.HasBlockingViolations() {
+				return writeCommandError(
+					cmd,
+					runtime,
+					"meta campaign create",
+					fmt.Errorf("campaign requirements resolution blocked mutation: %s", resolution.ViolationSummary()),
+				)
+			}
+
 			result, err := campaignNewService(campaignNewGraphClient()).Create(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCreateInput{
 				AccountID: accountID,
-				Params:    form,
+				Params:    resolution.Payload.Final,
 			})
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
@@ -112,7 +138,80 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
+	return cmd
+}
+
+type campaignRequirementsResult struct {
+	Status     string                  `json:"status"`
+	Resolution requirements.Resolution `json:"resolution"`
+}
+
+func newCampaignResolveRequirementsCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile   string
+		version   string
+		accountID string
+		paramsRaw string
+		jsonRaw   string
+		schemaDir string
+		rulesDir  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "resolve-requirements",
+		Short: "Resolve campaign create requirements and payload plan without executing mutation",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveCampaignProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign resolve-requirements", err)
+			}
+
+			form, err := parseKeyValueList(paramsRaw)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign resolve-requirements", err)
+			}
+			jsonForm, err := parseInlineJSONPayload(jsonRaw)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign resolve-requirements", err)
+			}
+			if err := mergeParams(form, jsonForm, "--json"); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign resolve-requirements", err)
+			}
+
+			resolution, err := resolveCampaignMutationRequirements(
+				creds,
+				resolvedVersion,
+				schemaDir,
+				rulesDir,
+				campaignRequirementsMutation,
+				accountID,
+				form,
+			)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign resolve-requirements", err)
+			}
+
+			result := campaignRequirementsResult{
+				Status:     "ok",
+				Resolution: resolution,
+			}
+			if resolution.HasBlockingViolations() {
+				result.Status = "violations"
+			}
+			return writeSuccess(cmd, runtime, "meta campaign resolve-requirements", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
+	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	return cmd
 }
 
@@ -369,6 +468,56 @@ func lintCampaignReadFields(linter *lint.Linter, fields []string) error {
 		return fmt.Errorf("campaign clone field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
+}
+
+func resolveCampaignMutationRequirements(
+	creds *ProfileCredentials,
+	version string,
+	schemaDir string,
+	rulesDir string,
+	mutation string,
+	accountID string,
+	params map[string]string,
+) (requirements.Resolution, error) {
+	if creds == nil {
+		return requirements.Resolution{}, errors.New("campaign profile credentials are required")
+	}
+	if strings.TrimSpace(version) == "" {
+		return requirements.Resolution{}, errors.New("campaign version is required")
+	}
+	if strings.TrimSpace(mutation) == "" {
+		return requirements.Resolution{}, errors.New("campaign mutation is required")
+	}
+
+	provider := campaignNewSchemaProvider(schemaDir)
+	pack, err := provider.GetPack(creds.Profile.Domain, version)
+	if err != nil {
+		return requirements.Resolution{}, err
+	}
+
+	rulePack, err := campaignLoadRulePack(creds.Profile.Domain, version, rulesDir)
+	if err != nil {
+		return requirements.Resolution{}, err
+	}
+	resolver, err := requirements.NewResolver(pack, rulePack)
+	if err != nil {
+		return requirements.Resolution{}, err
+	}
+
+	return resolver.Resolve(requirements.ResolveInput{
+		Mutation: mutation,
+		Payload:  params,
+		Profile: requirements.ProfileContext{
+			ProfileName:  creds.Name,
+			Domain:       creds.Profile.Domain,
+			GraphVersion: version,
+			TokenType:    creds.Profile.TokenType,
+			Scopes:       append([]string(nil), creds.Profile.Scopes...),
+			BusinessID:   creds.Profile.BusinessID,
+			AccountID:    strings.TrimSpace(accountID),
+			AppID:        creds.Profile.AppID,
+		},
+	})
 }
 
 func enforceCampaignBudgetGuardrail(params map[string]string, confirmed bool) error {

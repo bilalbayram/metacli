@@ -19,17 +19,18 @@ import (
 )
 
 const (
-	DefaultSchemaDir     = "schema-packs"
-	DefaultManifestURL   = "https://raw.githubusercontent.com/bilalbayram/meta-marketing-cli-schema/main/stable/manifest.json"
+	DefaultSchemaDir      = "schema-packs"
+	DefaultManifestURL    = "https://raw.githubusercontent.com/bilalbayram/meta-marketing-cli-schema/main/stable/manifest.json"
 	DefaultManifestPubKey = "Kwd20b0Rgz10RMMmLz57ShQ4m6fNnYw11f3UrhJ5j7A="
 )
 
 type Pack struct {
-	Domain           string              `json:"domain"`
-	Version          string              `json:"version"`
-	Entities         map[string][]string `json:"entities,omitempty"`
-	EndpointParams   map[string][]string `json:"endpoint_params,omitempty"`
-	DeprecatedParams map[string][]string `json:"deprecated_params,omitempty"`
+	Domain                 string              `json:"domain"`
+	Version                string              `json:"version"`
+	Entities               map[string][]string `json:"entities,omitempty"`
+	EndpointParams         map[string][]string `json:"endpoint_params,omitempty"`
+	EndpointRequiredParams map[string][]string `json:"endpoint_required_params,omitempty"`
+	DeprecatedParams       map[string][]string `json:"deprecated_params,omitempty"`
 }
 
 type PackRef struct {
@@ -51,8 +52,8 @@ type SignedManifest struct {
 }
 
 type ManifestPayload struct {
-	Channel     string     `json:"channel"`
-	GeneratedAt string     `json:"generated_at"`
+	Channel     string         `json:"channel"`
+	GeneratedAt string         `json:"generated_at"`
 	Packs       []ManifestPack `json:"packs"`
 }
 

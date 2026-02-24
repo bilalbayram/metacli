@@ -388,6 +388,58 @@ func TestAuthSetupDiscoversAndBindsDefaults(t *testing.T) {
 	assertEnvelopeBasics(t, envelope, "meta auth setup")
 }
 
+func TestAuthSetupAcceptsExplicitScopesOverride(t *testing.T) {
+	service := &stubAuthService{}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
+
+	capturedScopes := []string(nil)
+	originalBuild := buildAuthOAuthURLWithState
+	t.Cleanup(func() {
+		buildAuthOAuthURLWithState = originalBuild
+	})
+	buildAuthOAuthURLWithState = func(_ string, _ string, scopes []string, _ string, _ string, _ string) (string, error) {
+		capturedScopes = append([]string(nil), scopes...)
+		return "https://example.com/oauth", nil
+	}
+
+	stdout := &bytes.Buffer{}
+	cmd := NewAuthCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"setup",
+		"--app-id", "app_1",
+		"--app-secret", "secret_1",
+		"--scope-pack", "solo_smb",
+		"--scopes", "ads_read,pages_show_list",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute setup with scopes override: %v", err)
+	}
+
+	if len(capturedScopes) != 2 || capturedScopes[0] != "ads_read" || capturedScopes[1] != "pages_show_list" {
+		t.Fatalf("unexpected scopes passed to oauth URL builder: %#v", capturedScopes)
+	}
+
+	envelope := decodeEnvelope(t, stdout.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta auth setup")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %T", envelope["data"])
+	}
+	rawScopes, ok := data["scopes"].([]any)
+	if !ok {
+		t.Fatalf("expected scopes array, got %T", data["scopes"])
+	}
+	if len(rawScopes) != 2 || rawScopes[0] != "ads_read" || rawScopes[1] != "pages_show_list" {
+		t.Fatalf("unexpected scopes in output: %#v", rawScopes)
+	}
+}
+
 func TestAuthValidateUsesEnsureValidWithDefaults(t *testing.T) {
 	service := &stubAuthService{
 		ensureValidResult: &auth.DebugTokenMetadata{IsValid: true, Scopes: []string{"ads_read"}, ExpiresAt: time.Now().Add(96 * time.Hour)},

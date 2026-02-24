@@ -165,6 +165,7 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 		redirectURI    string
 		mode           string
 		scopePack      string
+		scopesRaw      string
 		listenAddr     string
 		timeout        time.Duration
 		openBrowser    bool
@@ -185,9 +186,12 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scopes, err := scopePackScopes(scopePack, resolvedMode)
-			if err != nil {
-				return err
+			scopes := csvToSlice(scopesRaw)
+			if len(scopes) == 0 {
+				scopes, err = scopePackScopes(scopePack, resolvedMode)
+				if err != nil {
+					return err
+				}
 			}
 
 			svc, err := newAuthCLIService()
@@ -264,6 +268,7 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret")
 	cmd.Flags().StringVar(&mode, "mode", auth.AuthModeBoth, "Auth mode: both|facebook|instagram")
 	cmd.Flags().StringVar(&scopePack, "scope-pack", "solo_smb", "Scope pack: solo_smb|ads_only|ig_publish")
+	cmd.Flags().StringVar(&scopesRaw, "scopes", "", "Comma-separated OAuth scopes (overrides --scope-pack when set)")
 	cmd.Flags().StringVar(&listenAddr, "listen", defaultAuthListenAddr, "OAuth callback listener host:port")
 	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI override (recommended for https tunnel domains)")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")

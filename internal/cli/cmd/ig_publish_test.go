@@ -283,6 +283,235 @@ func TestIGPublishFeedCommandUsesProfileIGUserIDWhenFlagOmitted(t *testing.T) {
 	}
 }
 
+func TestIGPublishFeedCommandFailsWhenBindingMissing(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					GraphVersion: "v25.0",
+					PageID:       "1122334455",
+				},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected binding resolution error")
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when binding is missing")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_binding_resolution_error" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "validation" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+}
+
+func TestIGPublishFeedCommandFailsWhenBindingAmbiguous(t *testing.T) {
+	profile := config.Profile{
+		GraphVersion: "v25.0",
+		IGUserID:     "17841400008461234",
+	}
+
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   profile,
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected binding ambiguity error")
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when binding is ambiguous")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_binding_resolution_error" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "conflict" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+}
+
+func TestIGPublishFeedCommandFailsWhenCapabilityGateBlocksProfile(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					GraphVersion: "v25.0",
+					AuthMode:     "facebook",
+					IGUserID:     "17841400008461234",
+					Scopes:       []string{"instagram_basic", "instagram_content_publish"},
+				},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected capability gate error")
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on capability gate failure")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_capability_gate" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "permission" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+}
+
+func TestIGPublishFeedCommandMapsPreflightFailuresToStructuredRemediation(t *testing.T) {
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return nil, errors.New("auth preflight failed for profile \"prod\": profile token is missing required scopes for profile \"prod\": instagram_content_publish")
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected preflight gate error")
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "ig_preflight_gate" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+	remediation, ok := errorBody["remediation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected remediation payload, got %T", errorBody["remediation"])
+	}
+	if got := remediation["category"]; got != "permission" {
+		t.Fatalf("unexpected remediation category %v", got)
+	}
+}
+
 func TestIGPublishFeedCommandWritesStructuredErrorWhenNotReady(t *testing.T) {
 	stub := &igPublishSequenceHTTPClient{
 		t: t,

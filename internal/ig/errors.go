@@ -10,6 +10,9 @@ import (
 
 const (
 	igErrorTypeValidation          = "ig_validation_error"
+	igErrorTypeBindingResolution   = "ig_binding_resolution_error"
+	igErrorTypeCapabilityGate      = "ig_capability_gate"
+	igErrorTypePreflightGate       = "ig_preflight_gate"
 	igErrorTypeStateTransition     = "ig_state_transition_error"
 	igErrorTypeNotFound            = "ig_not_found_error"
 	igErrorTypeIdempotencyConflict = "ig_idempotency_conflict"
@@ -17,6 +20,9 @@ const (
 	igErrorTypeTransient           = "ig_transient_error"
 
 	igErrorCodeValidation          = 422000
+	igErrorCodeBindingResolution   = 422100
+	igErrorCodeCapabilityGate      = 403100
+	igErrorCodePreflightGate       = 403101
 	igErrorCodeStateTransition     = 409100
 	igErrorCodeNotFound            = 404100
 	igErrorCodeIdempotencyConflict = 409101

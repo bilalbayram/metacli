@@ -337,11 +337,24 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 
 			creds, resolvedVersion, err := resolveIGProfileAndVersion(runtime, profile, version)
 			if err != nil {
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, ig.NormalizePublishPreflightError(err))
+			}
+
+			if err := ig.ValidatePublishCapability(creds.Name, creds.Profile); err != nil {
+				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
+			}
+
+			binding, err := ig.ResolvePublishBinding(ig.PublishBindingOptions{
+				ProfileName:       creds.Name,
+				Profile:           creds.Profile,
+				RequestedIGUserID: igUserID,
+			})
+			if err != nil {
 				return writeIGPublishScheduleCommandError(cmd, runtime, spec.commandName, err)
 			}
 
 			options := ig.FeedPublishOptions{
-				IGUserID:       resolveIGUserID(igUserID, creds.Profile),
+				IGUserID:       binding.IGUserID,
 				MediaURL:       mediaURL,
 				Caption:        caption,
 				MediaType:      mediaType,

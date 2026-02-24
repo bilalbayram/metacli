@@ -330,13 +330,18 @@ func useIGDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, e
 	t.Helper()
 	originalLoad := igLoadProfileCredentials
 	originalClient := igNewGraphClient
+	originalPreflight := profileAuthPreflight
 	t.Cleanup(func() {
 		igLoadProfileCredentials = originalLoad
 		igNewGraphClient = originalClient
+		profileAuthPreflight = originalPreflight
 	})
 
 	igLoadProfileCredentials = loadFn
 	igNewGraphClient = clientFn
+	profileAuthPreflight = func(string, []string, string) error {
+		return nil
+	}
 }
 
 func setOptionalProfileIGUserID(profile *config.Profile, igUserID string) bool {

@@ -23,6 +23,7 @@ const (
 )
 
 const missedScheduleError = "scheduled publish time elapsed without execution"
+const autoScheduleIdempotencyKeyPrefix = "auto.schedule:"
 
 type ScheduledPublishRecord struct {
 	ScheduleID     string `json:"schedule_id"`
@@ -382,6 +383,9 @@ func normalizeSchedulePublishOptions(options SchedulePublishOptions, now time.Ti
 		StrictMode:     options.StrictMode,
 		PublishAt:      publishAt.UTC().Format(time.RFC3339),
 	}
+	if normalized.IdempotencyKey == "" {
+		normalized.IdempotencyKey = defaultScheduleIdempotencyKey(normalized, publishAt)
+	}
 	idempotencyKey, err := normalizeIdempotencyKey(normalized.IdempotencyKey)
 	if err != nil {
 		return SchedulePublishOptions{}, time.Time{}, err
@@ -642,19 +646,31 @@ func findDuplicateSchedule(records []ScheduledPublishRecord, options SchedulePub
 		if record.Profile != options.Profile {
 			continue
 		}
+		recordSignature := schedulePayloadSignatureFromRecord(record)
 		recordIdempotencyKey, err := normalizeIdempotencyKey(record.IdempotencyKey)
 		if err != nil {
 			return ScheduledPublishRecord{}, false, err
 		}
+		if recordIdempotencyKey == "" && options.IdempotencyKey != "" {
+			if recordSignature == signature {
+				return record, true, nil
+			}
+			continue
+		}
 		if recordIdempotencyKey != options.IdempotencyKey {
 			continue
 		}
-		if schedulePayloadSignatureFromRecord(record) != signature {
+		if recordSignature != signature {
 			return ScheduledPublishRecord{}, false, newIdempotencyConflictError(options.IdempotencyKey, record.ScheduleID)
 		}
 		return record, true, nil
 	}
 	return ScheduledPublishRecord{}, false, nil
+}
+
+func defaultScheduleIdempotencyKey(options SchedulePublishOptions, publishAt time.Time) string {
+	signature := schedulePayloadSignatureFromOptions(options, publishAt)
+	return autoScheduleIdempotencyKeyPrefix + signature[:24]
 }
 
 func schedulePayloadSignatureFromOptions(options SchedulePublishOptions, publishAt time.Time) string {

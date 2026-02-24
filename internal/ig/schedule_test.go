@@ -214,6 +214,63 @@ func TestScheduleServiceSuppressesDuplicateByIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestScheduleServiceSuppressesDuplicateAcrossRerunsWithoutExplicitIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 23, 9, 0, 0, 0, time.UTC)
+	statePath := filepath.Join(t.TempDir(), "schedules.json")
+	service := NewScheduleService(statePath)
+	service.Now = func() time.Time {
+		return now
+	}
+
+	options := SchedulePublishOptions{
+		Profile:    "prod",
+		Version:    "v25.0",
+		Surface:    PublishSurfaceFeed,
+		IGUserID:   "17841400008460056",
+		MediaURL:   "https://cdn.example.com/feed.jpg",
+		Caption:    "hello #meta",
+		MediaType:  MediaTypeImage,
+		StrictMode: true,
+		PublishAt:  now.Add(2 * time.Hour).Format(time.RFC3339),
+	}
+
+	first, err := service.Schedule(options)
+	if err != nil {
+		t.Fatalf("schedule publish: %v", err)
+	}
+	if first.DuplicateSuppressed {
+		t.Fatal("first schedule should not be duplicate-suppressed")
+	}
+	if strings.TrimSpace(first.Schedule.IdempotencyKey) == "" {
+		t.Fatal("expected deterministic idempotency_key for scheduled publish")
+	}
+
+	rerunService := NewScheduleService(statePath)
+	rerunService.Now = func() time.Time {
+		return now
+	}
+	second, err := rerunService.Schedule(options)
+	if err != nil {
+		t.Fatalf("schedule duplicate publish on rerun: %v", err)
+	}
+	if !second.DuplicateSuppressed {
+		t.Fatal("expected duplicate_suppressed=true on rerun")
+	}
+	if second.Schedule.ScheduleID != first.Schedule.ScheduleID {
+		t.Fatalf("expected duplicate to reuse schedule id %q, got %q", first.Schedule.ScheduleID, second.Schedule.ScheduleID)
+	}
+
+	list, err := rerunService.List(ScheduleListOptions{})
+	if err != nil {
+		t.Fatalf("list schedules: %v", err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("expected one persisted schedule, got %d", list.Total)
+	}
+}
+
 func TestScheduleServiceRejectsIdempotencyConflict(t *testing.T) {
 	t.Parallel()
 

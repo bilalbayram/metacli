@@ -6,26 +6,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	SchemaVersion       = 1
+	SchemaVersion       = 2
 	DefaultGraphVersion = "v25.0"
 	DefaultDomain       = "marketing"
 )
 
 type Profile struct {
-	Domain        string `yaml:"domain"`
-	GraphVersion  string `yaml:"graph_version"`
-	TokenType     string `yaml:"token_type"`
-	BusinessID    string `yaml:"business_id,omitempty"`
-	AppID         string `yaml:"app_id,omitempty"`
-	PageID        string `yaml:"page_id,omitempty"`
-	SourceProfile string `yaml:"source_profile,omitempty"`
-	TokenRef      string `yaml:"token_ref"`
-	AppSecretRef  string `yaml:"app_secret_ref,omitempty"`
+	Domain          string   `yaml:"domain"`
+	GraphVersion    string   `yaml:"graph_version"`
+	TokenType       string   `yaml:"token_type"`
+	BusinessID      string   `yaml:"business_id,omitempty"`
+	AppID           string   `yaml:"app_id,omitempty"`
+	PageID          string   `yaml:"page_id,omitempty"`
+	SourceProfile   string   `yaml:"source_profile,omitempty"`
+	TokenRef        string   `yaml:"token_ref"`
+	AppSecretRef    string   `yaml:"app_secret_ref,omitempty"`
+	AuthProvider    string   `yaml:"auth_provider"`
+	AuthMode        string   `yaml:"auth_mode"`
+	Scopes          []string `yaml:"scopes"`
+	IssuedAt        string   `yaml:"issued_at"`
+	ExpiresAt       string   `yaml:"expires_at"`
+	LastValidatedAt string   `yaml:"last_validated_at"`
+	IGUserID        string   `yaml:"ig_user_id,omitempty"`
 }
 
 type Config struct {
@@ -208,8 +217,57 @@ func validateProfile(name string, profile Profile) error {
 	if profile.TokenType == "" {
 		return fmt.Errorf("profile %q token_type is required", name)
 	}
+	switch profile.TokenType {
+	case "system_user", "user", "page", "app":
+	default:
+		return fmt.Errorf("profile %q token_type must be one of [system_user user page app]", name)
+	}
 	if profile.TokenRef == "" {
 		return fmt.Errorf("profile %q token_ref is required", name)
+	}
+	if profile.AppID == "" {
+		return fmt.Errorf("profile %q app_id is required", name)
+	}
+	if profile.AppSecretRef == "" {
+		return fmt.Errorf("profile %q app_secret_ref is required", name)
+	}
+	if profile.AuthProvider == "" {
+		return fmt.Errorf("profile %q auth_provider is required", name)
+	}
+	switch profile.AuthProvider {
+	case "facebook_login", "instagram_login", "system_user", "app":
+	default:
+		return fmt.Errorf("profile %q auth_provider must be one of [facebook_login instagram_login system_user app]", name)
+	}
+	if profile.AuthMode == "" {
+		return fmt.Errorf("profile %q auth_mode is required", name)
+	}
+	switch profile.AuthMode {
+	case "both", "facebook", "instagram":
+	default:
+		return fmt.Errorf("profile %q auth_mode must be one of [both facebook instagram]", name)
+	}
+	if len(profile.Scopes) == 0 {
+		return fmt.Errorf("profile %q scopes must contain at least one scope", name)
+	}
+	for _, scope := range profile.Scopes {
+		if strings.TrimSpace(scope) == "" {
+			return fmt.Errorf("profile %q scopes contains blank entries", name)
+		}
+	}
+	issuedAt, err := time.Parse(time.RFC3339, profile.IssuedAt)
+	if err != nil {
+		return fmt.Errorf("profile %q issued_at must be RFC3339: %w", name, err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, profile.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("profile %q expires_at must be RFC3339: %w", name, err)
+	}
+	if !expiresAt.After(issuedAt) {
+		return fmt.Errorf("profile %q expires_at must be after issued_at", name)
+	}
+	if _, err := time.Parse(time.RFC3339, profile.LastValidatedAt); err != nil {
+		return fmt.Errorf("profile %q last_validated_at must be RFC3339: %w", name, err)
 	}
 	return nil
 }

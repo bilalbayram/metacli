@@ -32,7 +32,8 @@
       "lifetime_budget",
       "buying_type",
       "special_ad_categories",
-      "bid_strategy"
+      "bid_strategy",
+      "is_adset_budget_sharing_enabled"
     ],
     "adsets.post": [
       "name",
@@ -40,6 +41,7 @@
       "status",
       "billing_event",
       "optimization_goal",
+      "bid_strategy",
       "daily_budget",
       "lifetime_budget",
       "bid_amount",

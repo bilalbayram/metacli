@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/config"
@@ -181,9 +182,10 @@ func newIGMediaUploadCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta ig media upload", err)
 			}
+			resolvedIGUserID := resolveIGUserID(igUserID, creds.Profile)
 
 			options := ig.MediaUploadOptions{
-				IGUserID:       igUserID,
+				IGUserID:       resolvedIGUserID,
 				MediaURL:       mediaURL,
 				Caption:        caption,
 				MediaType:      mediaType,
@@ -205,7 +207,7 @@ func newIGMediaUploadCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cob
 
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
-	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id")
+	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id (optional when profile has ig_user_id)")
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption")
 	cmd.Flags().StringVar(&mediaType, "media-type", ig.MediaTypeImage, "Media type: IMAGE|VIDEO|REELS|STORIES")
@@ -340,7 +342,7 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 			}
 
 			options := ig.FeedPublishOptions{
-				IGUserID:       igUserID,
+				IGUserID:       resolveIGUserID(igUserID, creds.Profile),
 				MediaURL:       mediaURL,
 				Caption:        caption,
 				MediaType:      mediaType,
@@ -416,7 +418,7 @@ func newIGPublishImmediateCommand(runtime Runtime, pluginRuntime plugin.Runtime,
 
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
-	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id (required)")
+	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Instagram user id (optional when profile has ig_user_id)")
 	cmd.Flags().StringVar(&mediaURL, "media-url", "", "Public media URL (required)")
 	cmd.Flags().StringVar(&caption, "caption", "", "Instagram caption (required)")
 	cmd.Flags().StringVar(&mediaType, "media-type", spec.defaultMediaType, spec.mediaTypeHelp)
@@ -587,6 +589,30 @@ func resolveIGProfileAndVersion(runtime Runtime, profile string, version string)
 	}
 
 	return creds, resolvedVersion, nil
+}
+
+func resolveIGUserID(flagValue string, profile config.Profile) string {
+	if trimmed := strings.TrimSpace(flagValue); trimmed != "" {
+		return trimmed
+	}
+	return readProfileIGUserID(profile)
+}
+
+func readProfileIGUserID(profile config.Profile) string {
+	profileValue := reflect.ValueOf(profile)
+	if !profileValue.IsValid() {
+		return ""
+	}
+	for _, fieldName := range []string{"IGUserID", "IgUserID"} {
+		field := profileValue.FieldByName(fieldName)
+		if !field.IsValid() || field.Kind() != reflect.String {
+			continue
+		}
+		if value := strings.TrimSpace(field.String()); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func resolveIGScheduleStatePath(path string) (string, error) {

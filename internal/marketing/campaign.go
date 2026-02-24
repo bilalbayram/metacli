@@ -73,6 +73,16 @@ type CampaignCloneResult struct {
 	Response         map[string]any    `json:"response"`
 }
 
+type CampaignClonePlan struct {
+	SourceCampaignID string            `json:"source_campaign_id"`
+	TargetAccountID  string            `json:"target_account_id"`
+	Fields           []string          `json:"fields"`
+	SourcePayload    map[string]string `json:"source_payload"`
+	Overrides        map[string]string `json:"overrides"`
+	Payload          map[string]string `json:"payload"`
+	RemovedFields    []string          `json:"removed_fields"`
+}
+
 type Service struct {
 	Client *graph.Client
 }
@@ -185,6 +195,31 @@ func (s *Service) SetStatus(ctx context.Context, version string, token string, a
 }
 
 func (s *Service) Clone(ctx context.Context, version string, token string, appSecret string, input CampaignCloneInput) (*CampaignCloneResult, error) {
+	plan, err := s.BuildClonePlan(ctx, version, token, appSecret, input)
+	if err != nil {
+		return nil, err
+	}
+
+	createResult, err := s.Create(ctx, version, token, appSecret, CampaignCreateInput{
+		AccountID: plan.TargetAccountID,
+		Params:    plan.Payload,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &CampaignCloneResult{
+		Operation:        "clone",
+		SourceCampaignID: plan.SourceCampaignID,
+		CampaignID:       createResult.CampaignID,
+		RequestPath:      createResult.RequestPath,
+		Payload:          copyStringMap(plan.Payload),
+		RemovedFields:    append([]string(nil), plan.RemovedFields...),
+		Response:         createResult.Response,
+	}, nil
+}
+
+func (s *Service) BuildClonePlan(ctx context.Context, version string, token string, appSecret string, input CampaignCloneInput) (*CampaignClonePlan, error) {
 	if s == nil || s.Client == nil {
 		return nil, errors.New("campaign service client is required")
 	}
@@ -220,10 +255,12 @@ func (s *Service) Clone(ctx context.Context, version string, token string, appSe
 		return nil, err
 	}
 
-	clonePayload, removedFields, err := sanitizeCampaignClonePayload(sourceResponse.Body)
+	sourcePayload, removedFields, err := sanitizeCampaignClonePayload(sourceResponse.Body)
 	if err != nil {
 		return nil, err
 	}
+
+	clonePayload := copyStringMap(sourcePayload)
 	for key, value := range overrides {
 		clonePayload[key] = value
 	}
@@ -231,32 +268,14 @@ func (s *Service) Clone(ctx context.Context, version string, token string, appSe
 		return nil, errors.New("campaign clone payload is empty after sanitization")
 	}
 
-	createPath := fmt.Sprintf("act_%s/campaigns", accountID)
-	createResponse, err := s.Client.Do(ctx, graph.Request{
-		Method:      "POST",
-		Path:        createPath,
-		Version:     strings.TrimSpace(version),
-		Form:        clonePayload,
-		AccessToken: token,
-		AppSecret:   appSecret,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	campaignID, _ := createResponse.Body["id"].(string)
-	if strings.TrimSpace(campaignID) == "" {
-		return nil, errors.New("campaign clone create response did not include id")
-	}
-
-	return &CampaignCloneResult{
-		Operation:        "clone",
+	return &CampaignClonePlan{
 		SourceCampaignID: sourceCampaignID,
-		CampaignID:       campaignID,
-		RequestPath:      createPath,
-		Payload:          clonePayload,
-		RemovedFields:    removedFields,
-		Response:         createResponse.Body,
+		TargetAccountID:  accountID,
+		Fields:           append([]string(nil), fields...),
+		SourcePayload:    copyStringMap(sourcePayload),
+		Overrides:        copyStringMap(overrides),
+		Payload:          copyStringMap(clonePayload),
+		RemovedFields:    append([]string(nil), removedFields...),
 	}, nil
 }
 
@@ -388,4 +407,15 @@ func encodeGraphValue(value any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }

@@ -121,6 +121,181 @@ func TestCampaignCreateExecutesMutation(t *testing.T) {
 	}
 }
 
+func TestCampaignCreateAutoResolvesRequiredFieldsFromRequirements(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"id":"992","name":"Launch"}`,
+	}
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"objective":"OUTCOME_SALES","status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(profile string) (*ProfileCredentials, error) {
+			if profile != "prod" {
+				t.Fatalf("unexpected profile %q", profile)
+			}
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Launch",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign create: %v", err)
+	}
+
+	if stub.calls != 1 {
+		t.Fatalf("expected one graph call, got %d", stub.calls)
+	}
+	form, err := url.ParseQuery(stub.lastBody)
+	if err != nil {
+		t.Fatalf("parse create body: %v", err)
+	}
+	if got := form.Get("name"); got != "Launch" {
+		t.Fatalf("unexpected name %q", got)
+	}
+	if got := form.Get("objective"); got != "OUTCOME_SALES" {
+		t.Fatalf("expected objective injected from runtime rules, got %q", got)
+	}
+	if got := form.Get("status"); got != "PAUSED" {
+		t.Fatalf("expected status injected from runtime rules, got %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign create")
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignCreateDryRunOutputsFinalPayloadProvenance(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Launch,objective=OUTCOME_SALES",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+		"--dry-run",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign create dry-run: %v", err)
+	}
+
+	if wasCalled {
+		t.Fatal("graph client should not execute in create dry-run")
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign create")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "ok" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["dry_run"]; got != true {
+		t.Fatalf("expected dry_run=true, got %v", got)
+	}
+	plan, ok := data["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected plan object, got %T", data["plan"])
+	}
+	finalPayload, ok := plan["final_payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final payload object, got %T", plan["final_payload"])
+	}
+	if got := finalPayload["status"]; got != "PAUSED" {
+		t.Fatalf("expected injected status in dry-run payload, got %v", got)
+	}
+	provenance, ok := plan["payload_provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload provenance object, got %T", plan["payload_provenance"])
+	}
+	if got := provenance["name"]; got != "input" {
+		t.Fatalf("expected name provenance=input, got %v", got)
+	}
+	if got := provenance["status"]; got != "requirements.inject_defaults" {
+		t.Fatalf("expected status provenance=requirements.inject_defaults, got %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
 func TestCampaignCreateFailsWithoutBudgetConfirmation(t *testing.T) {
 	wasCalled := false
 	schemaDir := writeCampaignSchemaPack(t)
@@ -345,6 +520,23 @@ func TestCampaignResolveRequirementsReturnsResolvedPayloadPlan(t *testing.T) {
 	}
 	if got := data["status"]; got != "ok" {
 		t.Fatalf("unexpected status %v", got)
+	}
+	resultFinalPayload, ok := data["final_payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final_payload object, got %T", data["final_payload"])
+	}
+	if got := resultFinalPayload["status"]; got != "PAUSED" {
+		t.Fatalf("expected top-level final_payload status=PAUSED, got %v", got)
+	}
+	provenance, ok := data["payload_provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload_provenance object, got %T", data["payload_provenance"])
+	}
+	if got := provenance["status"]; got != "requirements.inject_defaults" {
+		t.Fatalf("expected status provenance=requirements.inject_defaults, got %v", got)
+	}
+	if got := provenance["name"]; got != "input" {
+		t.Fatalf("expected name provenance=input, got %v", got)
 	}
 	resolution, ok := data["resolution"].(map[string]any)
 	if !ok {
@@ -1083,6 +1275,220 @@ func TestCampaignCloneExecutesReadSanitizeCreateFlow(t *testing.T) {
 	}
 	if got := data["source_campaign_id"]; got != "source_77" {
 		t.Fatalf("unexpected source campaign id %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignCloneInjectsRequiredOverridesWhenSourceFieldsInsufficient(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected read method %s", r.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":        "source_91",
+				"name":      "Source Name",
+				"objective": "OUTCOME_SALES",
+			})
+		case 2:
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected create method %s", r.Method)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read create request body: %v", err)
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("parse create request body: %v", err)
+			}
+			if got := form.Get("status"); got != "PAUSED" {
+				t.Fatalf("expected status injected from requirements, got %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "clone_91"})
+		default:
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"clone",
+		"--source-campaign-id", "source_91",
+		"--account-id", "4242",
+		"--fields", "id,name,objective",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign clone: %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Fatalf("expected two requests, got %d", requestCount)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign clone")
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignCloneDryRunOutputsFinalPayloadProvenance(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+	rulesDir := writeCampaignRuntimeRulePack(t, `{
+  "domain":"marketing",
+  "version":"v25.0",
+  "mutations":{
+    "campaigns.post":{
+      "add_required":["name","objective","status"],
+      "inject_defaults":{"status":"PAUSED"},
+      "drift_policy":"error"
+    }
+  }
+}`)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount != 1 {
+			t.Fatalf("dry-run should not execute create request, got request #%d", requestCount)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected read method %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":        "source_92",
+			"name":      "Source Name",
+			"objective": "OUTCOME_SALES",
+		})
+	}))
+	defer server.Close()
+
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"clone",
+		"--source-campaign-id", "source_92",
+		"--account-id", "4242",
+		"--params", "name=Clone Name",
+		"--fields", "id,name,objective",
+		"--schema-dir", schemaDir,
+		"--rules-dir", rulesDir,
+		"--dry-run",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign clone dry-run: %v", err)
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("expected one read request in dry-run, got %d", requestCount)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign clone")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["dry_run"]; got != true {
+		t.Fatalf("expected dry_run=true, got %v", got)
+	}
+	plan, ok := data["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected plan object, got %T", data["plan"])
+	}
+	finalPayload, ok := plan["final_payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final_payload object, got %T", plan["final_payload"])
+	}
+	if got := finalPayload["status"]; got != "PAUSED" {
+		t.Fatalf("expected injected status in clone dry-run, got %v", got)
+	}
+	provenance, ok := plan["payload_provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload_provenance object, got %T", plan["payload_provenance"])
+	}
+	if got := provenance["name"]; got != "clone.override" {
+		t.Fatalf("expected name provenance=clone.override, got %v", got)
+	}
+	if got := provenance["objective"]; got != "clone.source_payload" {
+		t.Fatalf("expected objective provenance=clone.source_payload, got %v", got)
+	}
+	if got := provenance["status"]; got != "requirements.inject_defaults" {
+		t.Fatalf("expected status provenance=requirements.inject_defaults, got %v", got)
+	}
+	if _, ok := plan["clone_plan"].(map[string]any); !ok {
+		t.Fatalf("expected clone_plan object, got %T", plan["clone_plan"])
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())

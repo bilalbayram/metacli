@@ -15,8 +15,12 @@ import (
 )
 
 const (
-	campaignMutationLintPath     = "act_0/campaigns"
-	campaignRequirementsMutation = "campaigns.post"
+	campaignMutationLintPath      = "act_0/campaigns"
+	campaignRequirementsMutation  = "campaigns.post"
+	campaignPayloadSourceInput    = "input"
+	campaignPayloadSourceRule     = "requirements.inject_defaults"
+	campaignPayloadSourceClone    = "clone.source_payload"
+	campaignPayloadSourceOverride = "clone.override"
 )
 
 var (
@@ -64,6 +68,7 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 		schemaDir           string
 		rulesDir            string
 		confirmBudgetChange bool
+		dryRun              bool
 	)
 
 	cmd := &cobra.Command{
@@ -119,10 +124,29 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 					fmt.Errorf("campaign requirements resolution blocked mutation: %s", resolution.ViolationSummary()),
 				)
 			}
+			if err := lintCampaignMutation(linter, resolution.Payload.Final); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign create", err)
+			}
+
+			plan := campaignMutationPlanResult{
+				Operation:         "create",
+				Mutation:          campaignRequirementsMutation,
+				AccountID:         strings.TrimSpace(accountID),
+				Resolution:        resolution,
+				FinalPayload:      copyCampaignPayload(resolution.Payload.Final),
+				PayloadProvenance: campaignPayloadProvenance(resolution.Payload.Final, resolution.Payload.Injected, campaignFieldSources(resolution.Payload.Input, campaignPayloadSourceInput), campaignPayloadSourceInput),
+			}
+			if dryRun {
+				return writeSuccess(cmd, runtime, "meta campaign create", campaignDryRunResult{
+					Status: "ok",
+					DryRun: true,
+					Plan:   plan,
+				}, nil, nil)
+			}
 
 			result, err := campaignNewService(campaignNewGraphClient()).Create(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCreateInput{
 				AccountID: accountID,
-				Params:    resolution.Payload.Final,
+				Params:    plan.FinalPayload,
 			})
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
@@ -140,12 +164,33 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Resolve requirements and output plan without executing mutation")
+	cmd.Flags().BoolVar(&dryRun, "plan", false, "Alias of --dry-run")
 	return cmd
 }
 
 type campaignRequirementsResult struct {
-	Status     string                  `json:"status"`
-	Resolution requirements.Resolution `json:"resolution"`
+	Status            string                  `json:"status"`
+	Resolution        requirements.Resolution `json:"resolution"`
+	FinalPayload      map[string]string       `json:"final_payload"`
+	PayloadProvenance map[string]string       `json:"payload_provenance"`
+}
+
+type campaignMutationPlanResult struct {
+	Operation         string                       `json:"operation"`
+	Mutation          string                       `json:"mutation"`
+	AccountID         string                       `json:"account_id,omitempty"`
+	SourceCampaignID  string                       `json:"source_campaign_id,omitempty"`
+	Resolution        requirements.Resolution      `json:"resolution"`
+	FinalPayload      map[string]string            `json:"final_payload"`
+	PayloadProvenance map[string]string            `json:"payload_provenance"`
+	ClonePlan         *marketing.CampaignClonePlan `json:"clone_plan,omitempty"`
+}
+
+type campaignDryRunResult struct {
+	Status string                     `json:"status"`
+	DryRun bool                       `json:"dry_run"`
+	Plan   campaignMutationPlanResult `json:"plan"`
 }
 
 func newCampaignResolveRequirementsCommand(runtime Runtime) *cobra.Command {
@@ -195,8 +240,10 @@ func newCampaignResolveRequirementsCommand(runtime Runtime) *cobra.Command {
 			}
 
 			result := campaignRequirementsResult{
-				Status:     "ok",
-				Resolution: resolution,
+				Status:            "ok",
+				Resolution:        resolution,
+				FinalPayload:      copyCampaignPayload(resolution.Payload.Final),
+				PayloadProvenance: campaignPayloadProvenance(resolution.Payload.Final, resolution.Payload.Injected, campaignFieldSources(resolution.Payload.Input, campaignPayloadSourceInput), campaignPayloadSourceInput),
 			}
 			if resolution.HasBlockingViolations() {
 				result.Status = "violations"
@@ -345,6 +392,8 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 		paramsRaw        string
 		jsonRaw          string
 		schemaDir        string
+		rulesDir         string
+		dryRun           bool
 	)
 
 	cmd := &cobra.Command{
@@ -385,7 +434,8 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 				return writeCommandError(cmd, runtime, "meta campaign clone", err)
 			}
 
-			result, err := campaignNewService(campaignNewGraphClient()).Clone(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCloneInput{
+			service := campaignNewService(campaignNewGraphClient())
+			clonePlan, err := service.BuildClonePlan(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCloneInput{
 				SourceCampaignID: sourceCampaignID,
 				TargetAccountID:  accountID,
 				Overrides:        overrides,
@@ -393,6 +443,66 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 			})
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			resolution, err := resolveCampaignMutationRequirements(
+				creds,
+				resolvedVersion,
+				schemaDir,
+				rulesDir,
+				campaignRequirementsMutation,
+				clonePlan.TargetAccountID,
+				clonePlan.Payload,
+			)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+			if resolution.HasBlockingViolations() {
+				return writeCommandError(
+					cmd,
+					runtime,
+					"meta campaign clone",
+					fmt.Errorf("campaign requirements resolution blocked mutation: %s", resolution.ViolationSummary()),
+				)
+			}
+			if err := lintCampaignMutation(linter, resolution.Payload.Final); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			plan := campaignMutationPlanResult{
+				Operation:         "clone",
+				Mutation:          campaignRequirementsMutation,
+				AccountID:         clonePlan.TargetAccountID,
+				SourceCampaignID:  clonePlan.SourceCampaignID,
+				Resolution:        resolution,
+				FinalPayload:      copyCampaignPayload(resolution.Payload.Final),
+				PayloadProvenance: campaignPayloadProvenance(resolution.Payload.Final, resolution.Payload.Injected, campaignCloneFieldSources(clonePlan), campaignPayloadSourceClone),
+				ClonePlan:         cloneCampaignClonePlan(clonePlan),
+			}
+			if dryRun {
+				return writeSuccess(cmd, runtime, "meta campaign clone", campaignDryRunResult{
+					Status: "ok",
+					DryRun: true,
+					Plan:   plan,
+				}, nil, nil)
+			}
+
+			createResult, err := service.Create(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignCreateInput{
+				AccountID: clonePlan.TargetAccountID,
+				Params:    plan.FinalPayload,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
+			}
+
+			result := marketing.CampaignCloneResult{
+				Operation:        "clone",
+				SourceCampaignID: clonePlan.SourceCampaignID,
+				CampaignID:       createResult.CampaignID,
+				RequestPath:      createResult.RequestPath,
+				Payload:          copyCampaignPayload(plan.FinalPayload),
+				RemovedFields:    append([]string(nil), clonePlan.RemovedFields...),
+				Response:         cloneAnyMap(createResult.Response),
 			}
 
 			return writeSuccess(cmd, runtime, "meta campaign clone", result, nil, nil)
@@ -407,6 +517,9 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated override params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object overrides")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Resolve clone requirements and output plan without executing mutation")
+	cmd.Flags().BoolVar(&dryRun, "plan", false, "Alias of --dry-run")
 	return cmd
 }
 
@@ -535,4 +648,80 @@ func campaignMutationChangesBudget(params map[string]string) bool {
 		}
 	}
 	return false
+}
+
+func campaignPayloadProvenance(final map[string]string, injected map[string]string, baseSources map[string]string, fallbackSource string) map[string]string {
+	provenance := make(map[string]string, len(final))
+	for field := range final {
+		if _, isInjected := injected[field]; isInjected {
+			provenance[field] = campaignPayloadSourceRule
+			continue
+		}
+		if source, exists := baseSources[field]; exists {
+			provenance[field] = source
+			continue
+		}
+		provenance[field] = fallbackSource
+	}
+	return provenance
+}
+
+func campaignFieldSources(payload map[string]string, source string) map[string]string {
+	sources := make(map[string]string, len(payload))
+	for field := range payload {
+		sources[field] = source
+	}
+	return sources
+}
+
+func campaignCloneFieldSources(plan *marketing.CampaignClonePlan) map[string]string {
+	if plan == nil {
+		return map[string]string{}
+	}
+
+	sources := make(map[string]string, len(plan.SourcePayload)+len(plan.Overrides))
+	for field := range plan.SourcePayload {
+		sources[field] = campaignPayloadSourceClone
+	}
+	for field := range plan.Overrides {
+		sources[field] = campaignPayloadSourceOverride
+	}
+	return sources
+}
+
+func copyCampaignPayload(payload map[string]string) map[string]string {
+	if len(payload) == 0 {
+		return map[string]string{}
+	}
+	copied := make(map[string]string, len(payload))
+	for key, value := range payload {
+		copied[key] = value
+	}
+	return copied
+}
+
+func cloneCampaignClonePlan(plan *marketing.CampaignClonePlan) *marketing.CampaignClonePlan {
+	if plan == nil {
+		return nil
+	}
+	return &marketing.CampaignClonePlan{
+		SourceCampaignID: plan.SourceCampaignID,
+		TargetAccountID:  plan.TargetAccountID,
+		Fields:           append([]string(nil), plan.Fields...),
+		SourcePayload:    copyCampaignPayload(plan.SourcePayload),
+		Overrides:        copyCampaignPayload(plan.Overrides),
+		Payload:          copyCampaignPayload(plan.Payload),
+		RemovedFields:    append([]string(nil), plan.RemovedFields...),
+	}
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+	copied := make(map[string]any, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
 }

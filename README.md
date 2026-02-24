@@ -4,7 +4,7 @@ Fail-closed CLI for Meta Graph and Marketing APIs with auth profiles, write work
 
 This README reflects the latest 43 commits on this branch (through `0122ecf`, dated February 23, 2026).
 
-## Highlights (Latest 43 Commits)
+## Highlights
 
 - Added full Marketing lifecycle command groups at root: `campaign`, `adset`, `ad`, `creative`, `audience`, `catalog`
 - Added strict mutation linting against schema packs for write commands
@@ -49,7 +49,7 @@ go build -o meta ./cmd/meta
 ## Configuration and Secrets
 
 - App config: `~/.meta/config.yaml`
-- Config schema: `schema_version: 1`
+- Config schema: `schema_version: 2`
 - Default Graph API version: `v25.0`
 - Default schema domain: `marketing`
 - Secrets service name: `meta-marketing-cli`
@@ -58,18 +58,38 @@ go build -o meta ./cmd/meta
 
 ## Quick Start
 
-### 1) Create and validate an auth profile
+### 1) Set up auth profile (automated browser callback)
 
 ```bash
-./meta auth add system-user \
+./meta auth setup \
   --profile prod \
-  --business-id <BUSINESS_ID> \
   --app-id <APP_ID> \
-  --token <SYSTEM_USER_TOKEN> \
-  --app-secret <APP_SECRET>
+  --app-secret <APP_SECRET> \
+  --mode both \
+  --scope-pack solo_smb \
+  --listen 127.0.0.1:53682 \
+  --timeout 180s \
+  --open-browser
 
-./meta auth validate --profile prod
-./meta auth list --profile prod
+./meta auth validate \
+  --profile prod \
+  --min-ttl 72h
+
+./meta auth discover \
+  --profile prod \
+  --mode ig
+```
+
+Manual code exchange remains available when needed:
+
+```bash
+./meta auth login-manual \
+  --profile prod \
+  --app-id <APP_ID> \
+  --app-secret <APP_SECRET> \
+  --redirect-uri <REDIRECT_URI> \
+  --scopes "pages_show_list,instagram_basic,instagram_content_publish" \
+  --code <AUTH_CODE>
 ```
 
 ### 2) Use the Graph API directly
@@ -283,7 +303,10 @@ meta
 │   └── delete
 ├── auth
 │   ├── add system-user
+│   ├── setup
 │   ├── login
+│   ├── login-manual
+│   ├── discover
 │   ├── page-token
 │   ├── app-token set
 │   ├── validate

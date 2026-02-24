@@ -157,6 +157,130 @@ func TestAudienceCreateFailsLintValidation(t *testing.T) {
 	}
 }
 
+func TestAudienceCreateFailsDomainGateWhenPolicyStrict(t *testing.T) {
+	wasCalled := false
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       "instagram",
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"create"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), `requires profile domain "marketing"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when domain gate blocks command")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience create" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if got := envelope["success"]; got != false {
+		t.Fatalf("expected success=false, got %v", got)
+	}
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected domain gate payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "blocked" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["policy"]; got != "strict" {
+		t.Fatalf("unexpected policy %v", got)
+	}
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error payload, got %T", envelope["error"])
+	}
+	if got := errorBody["type"]; got != "domain_gate_blocked" {
+		t.Fatalf("unexpected error type %v", got)
+	}
+}
+
+func TestAudienceCreateSkipsDomainGateWhenPolicySkip(t *testing.T) {
+	wasCalled := false
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       "instagram",
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"create", "--domain-policy", "skip"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience create with skip policy: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when domain gate skips command")
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience create")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected domain gate payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "skipped" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["policy"]; got != "skip" {
+		t.Fatalf("unexpected policy %v", got)
+	}
+	warnings, ok := data["warnings"].([]any)
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %#v", data["warnings"])
+	}
+}
+
 func TestAudienceUpdateExecutesMutation(t *testing.T) {
 	stub := &stubHTTPClient{
 		t:          t,

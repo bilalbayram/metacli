@@ -39,12 +39,13 @@ func NewCatalogCommand(runtime Runtime) *cobra.Command {
 
 func newCatalogUploadItemsCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile   string
-		version   string
-		catalogID string
-		itemType  string
-		filePath  string
-		jsonRaw   string
+		profile      string
+		version      string
+		catalogID    string
+		itemType     string
+		filePath     string
+		jsonRaw      string
+		domainPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -52,9 +53,20 @@ func newCatalogUploadItemsCommand(runtime Runtime) *cobra.Command {
 		Short: "Upload catalog items with CREATE batch requests",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta catalog upload-items", err)
+			}
+
 			creds, resolvedVersion, err := resolveCatalogProfileAndVersion(runtime, profile, version)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta catalog upload-items", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta catalog upload-items", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
 			}
 
 			items, err := parseCatalogUploadItemsInput(filePath, jsonRaw)
@@ -85,17 +97,19 @@ func newCatalogUploadItemsCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&itemType, "item-type", "", "Catalog item type (default PRODUCT_ITEM)")
 	cmd.Flags().StringVar(&filePath, "file", "", "Path to JSON items file")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON payload containing items")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
 
 func newCatalogBatchItemsCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile   string
-		version   string
-		catalogID string
-		itemType  string
-		filePath  string
-		jsonRaw   string
+		profile      string
+		version      string
+		catalogID    string
+		itemType     string
+		filePath     string
+		jsonRaw      string
+		domainPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -103,9 +117,20 @@ func newCatalogBatchItemsCommand(runtime Runtime) *cobra.Command {
 		Short: "Send explicit catalog item batch requests",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta catalog batch-items", err)
+			}
+
 			creds, resolvedVersion, err := resolveCatalogProfileAndVersion(runtime, profile, version)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta catalog batch-items", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta catalog batch-items", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
 			}
 
 			requests, err := parseCatalogBatchRequestsInput(filePath, jsonRaw)
@@ -136,6 +161,7 @@ func newCatalogBatchItemsCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&itemType, "item-type", "", "Catalog item type (default PRODUCT_ITEM)")
 	cmd.Flags().StringVar(&filePath, "file", "", "Path to JSON batch file")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON payload containing requests")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
 

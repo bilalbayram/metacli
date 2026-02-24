@@ -9,12 +9,20 @@ import (
 	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/marketing"
+	"github.com/bilalbayram/metacli/internal/output"
 	"github.com/bilalbayram/metacli/internal/schema"
 	"github.com/spf13/cobra"
 )
 
 const (
 	audienceMutationLintPath = "act_0/customaudiences"
+	domainGatePolicyStrict   = "strict"
+	domainGatePolicySkip     = "skip"
+
+	domainGateStatusSkipped = "skipped"
+	domainGateStatusBlocked = "blocked"
+
+	domainGateErrorTypeBlocked = "domain_gate_blocked"
 )
 
 var (
@@ -46,12 +54,13 @@ func NewAudienceCommand(runtime Runtime) *cobra.Command {
 
 func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile   string
-		version   string
-		accountID string
-		paramsRaw string
-		jsonRaw   string
-		schemaDir string
+		profile      string
+		version      string
+		accountID    string
+		paramsRaw    string
+		jsonRaw      string
+		schemaDir    string
+		domainPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -59,9 +68,20 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 		Short: "Create a custom audience",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta audience create", err)
+			}
+
 			creds, resolvedVersion, err := resolveAudienceProfileAndVersion(runtime, profile, version)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta audience create", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta audience create", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
 			}
 
 			form, err := parseKeyValueList(paramsRaw)
@@ -102,17 +122,19 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
 
 func newAudienceUpdateCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile    string
-		version    string
-		audienceID string
-		paramsRaw  string
-		jsonRaw    string
-		schemaDir  string
+		profile      string
+		version      string
+		audienceID   string
+		paramsRaw    string
+		jsonRaw      string
+		schemaDir    string
+		domainPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -120,9 +142,20 @@ func newAudienceUpdateCommand(runtime Runtime) *cobra.Command {
 		Short: "Update a custom audience",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta audience update", err)
+			}
+
 			creds, resolvedVersion, err := resolveAudienceProfileAndVersion(runtime, profile, version)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta audience update", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta audience update", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
 			}
 
 			form, err := parseKeyValueList(paramsRaw)
@@ -163,14 +196,16 @@ func newAudienceUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
 
 func newAudienceDeleteCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile    string
-		version    string
-		audienceID string
+		profile      string
+		version      string
+		audienceID   string
+		domainPolicy string
 	)
 
 	cmd := &cobra.Command{
@@ -178,9 +213,20 @@ func newAudienceDeleteCommand(runtime Runtime) *cobra.Command {
 		Short: "Delete a custom audience",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta audience delete", err)
+			}
+
 			creds, resolvedVersion, err := resolveAudienceProfileAndVersion(runtime, profile, version)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta audience delete", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta audience delete", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
 			}
 
 			result, err := audienceNewService(audienceNewGraphClient()).Delete(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AudienceDeleteInput{
@@ -197,6 +243,7 @@ func newAudienceDeleteCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&audienceID, "audience-id", "", "Audience id")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
 
@@ -246,4 +293,83 @@ func lintAudienceMutation(linter *lint.Linter, params map[string]string) error {
 		return fmt.Errorf("audience mutation lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
+}
+
+type domainGateStatus struct {
+	Status         string   `json:"status"`
+	Policy         string   `json:"policy"`
+	Domain         string   `json:"domain"`
+	RequiredDomain string   `json:"required_domain"`
+	Warnings       []string `json:"warnings,omitempty"`
+	Message        string   `json:"message,omitempty"`
+}
+
+func normalizeDomainGatePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "", domainGatePolicyStrict:
+		return domainGatePolicyStrict
+	case domainGatePolicySkip:
+		return domainGatePolicySkip
+	default:
+		return ""
+	}
+}
+
+func validateDomainGatePolicy(policy string) error {
+	if normalizeDomainGatePolicy(policy) == "" {
+		return fmt.Errorf("domain policy must be one of [%s %s], got %q", domainGatePolicyStrict, domainGatePolicySkip, policy)
+	}
+	return nil
+}
+
+func enforceMarketingDomainGate(cmd *cobra.Command, runtime Runtime, commandName string, policy string, domain string) (bool, error) {
+	normalizedPolicy := normalizeDomainGatePolicy(policy)
+	if normalizedPolicy == "" {
+		return false, writeCommandError(cmd, runtime, commandName, fmt.Errorf("domain policy must be one of [%s %s], got %q", domainGatePolicyStrict, domainGatePolicySkip, policy))
+	}
+
+	resolvedDomain := strings.TrimSpace(domain)
+	if strings.EqualFold(resolvedDomain, config.DefaultDomain) {
+		return true, nil
+	}
+	if resolvedDomain == "" {
+		resolvedDomain = "(empty)"
+	}
+
+	message := fmt.Sprintf("%s requires profile domain %q, got %q", commandName, config.DefaultDomain, resolvedDomain)
+	status := domainGateStatus{
+		Policy:         normalizedPolicy,
+		Domain:         resolvedDomain,
+		RequiredDomain: config.DefaultDomain,
+	}
+	if normalizedPolicy == domainGatePolicySkip {
+		status.Status = domainGateStatusSkipped
+		status.Warnings = []string{message}
+		return false, writeSuccess(cmd, runtime, commandName, status, nil, nil)
+	}
+
+	status.Status = domainGateStatusBlocked
+	status.Message = message
+	return false, writeDomainGateBlockedError(cmd, runtime, commandName, status, errors.New(message))
+}
+
+func writeDomainGateBlockedError(cmd *cobra.Command, runtime Runtime, commandName string, status domainGateStatus, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	errorInfo := &output.ErrorInfo{
+		Type:      domainGateErrorTypeBlocked,
+		Message:   err.Error(),
+		Retryable: false,
+	}
+
+	envelope, envErr := output.NewEnvelope(commandName, false, status, nil, nil, errorInfo)
+	if envErr != nil {
+		return fmt.Errorf("%w (secondary output error: %v)", err, envErr)
+	}
+	if writeErr := output.Write(cmd.ErrOrStderr(), selectedOutputFormat(runtime), envelope); writeErr != nil {
+		return fmt.Errorf("%w (secondary output error: %v)", err, writeErr)
+	}
+	return err
 }

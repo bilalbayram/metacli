@@ -939,14 +939,24 @@ func TestEnterpriseModeCutoverMigratesLegacyConfig(t *testing.T) {
 	enterprisePath := filepath.Join(dir, "enterprise.yaml")
 
 	if err := os.WriteFile(legacyPath, []byte(`
-schema_version: 1
+schema_version: 2
 default_profile: prod
 profiles:
   prod:
     domain: marketing
     graph_version: v25.0
     token_type: system_user
-    token_ref: keychain://meta/prod/token
+    token_ref: keychain://meta-marketing-cli/prod/token
+    app_id: app_123
+    app_secret_ref: keychain://meta-marketing-cli/prod/app_secret
+    auth_provider: system_user
+    auth_mode: both
+    scopes:
+      - ads_management
+      - business_management
+    issued_at: "2026-01-15T00:00:00Z"
+    expires_at: "2026-12-31T23:59:59Z"
+    last_validated_at: "2026-01-16T00:00:00Z"
 `), 0o600); err != nil {
 		t.Fatalf("write legacy config fixture: %v", err)
 	}
@@ -1010,14 +1020,24 @@ func TestEnterpriseModeCutoverFailsWhenOutputExists(t *testing.T) {
 	enterprisePath := filepath.Join(dir, "enterprise.yaml")
 
 	if err := os.WriteFile(legacyPath, []byte(`
-schema_version: 1
+schema_version: 2
 default_profile: prod
 profiles:
   prod:
     domain: marketing
     graph_version: v25.0
     token_type: system_user
-    token_ref: keychain://meta/prod/token
+    token_ref: keychain://meta-marketing-cli/prod/token
+    app_id: app_123
+    app_secret_ref: keychain://meta-marketing-cli/prod/app_secret
+    auth_provider: system_user
+    auth_mode: both
+    scopes:
+      - ads_management
+      - business_management
+    issued_at: "2026-01-15T00:00:00Z"
+    expires_at: "2026-12-31T23:59:59Z"
+    last_validated_at: "2026-01-16T00:00:00Z"
 `), 0o600); err != nil {
 		t.Fatalf("write legacy config fixture: %v", err)
 	}

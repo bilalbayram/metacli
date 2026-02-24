@@ -1,0 +1,160 @@
+[
+  {
+    "name": "not_found_subcode_33_maps_to_not_found",
+    "status_code": 400,
+    "code": 100,
+    "subcode": 33,
+    "expected": {
+      "category": "not_found",
+      "summary": "Referenced object or edge does not exist for this request.",
+      "actions": [
+        "Check object IDs and endpoint path for typos.",
+        "Ensure the object belongs to the authenticated account context."
+      ]
+    },
+    "expected_signature": "status=400|code=100|subcode=33|category=not_found|fields=-"
+  },
+  {
+    "name": "validation_non33_subcode_stays_validation",
+    "status_code": 400,
+    "code": 100,
+    "subcode": 18157520,
+    "expected": {
+      "category": "validation",
+      "summary": "Request payload failed Meta validation.",
+      "actions": [
+        "Review required fields and payload shape for the endpoint."
+      ]
+    },
+    "expected_signature": "status=400|code=100|subcode=18157520|category=validation|fields=-"
+  },
+  {
+    "name": "validation_with_blame_fields_emits_sorted_fields",
+    "status_code": 400,
+    "code": 100,
+    "subcode": 0,
+    "diagnostics": {
+      "error_data": {
+        "blame_field_specs": [
+          [
+            "targeting",
+            "geo_locations"
+          ],
+          [
+            "daily_budget"
+          ],
+          [
+            "targeting",
+            "geo_locations"
+          ]
+        ]
+      }
+    },
+    "expected": {
+      "category": "validation",
+      "summary": "Request payload failed Meta validation.",
+      "actions": [
+        "Review required fields and payload shape for the endpoint.",
+        "Fix invalid field paths: daily_budget, targeting.geo_locations."
+      ],
+      "fields": [
+        "daily_budget",
+        "targeting.geo_locations"
+      ]
+    },
+    "expected_signature": "status=400|code=100|subcode=0|category=validation|fields=daily_budget,targeting.geo_locations"
+  },
+  {
+    "name": "permission_code_200_ignores_subcode",
+    "status_code": 403,
+    "code": 200,
+    "subcode": 2018336,
+    "expected": {
+      "category": "permission",
+      "summary": "Profile token is missing required permissions for this operation.",
+      "actions": [
+        "Verify required scopes are granted for the active profile.",
+        "Confirm the token has access to the target business asset."
+      ]
+    },
+    "expected_signature": "status=403|code=200|subcode=2018336|category=permission|fields=-"
+  },
+  {
+    "name": "auth_code_190_with_subcode_maps_to_auth",
+    "status_code": 401,
+    "code": 190,
+    "subcode": 463,
+    "expected": {
+      "category": "auth",
+      "summary": "Access token is invalid or expired.",
+      "actions": [
+        "Run `meta auth validate --profile <name>` to confirm token health.",
+        "Refresh credentials with `meta auth setup` or `meta auth login`."
+      ]
+    },
+    "expected_signature": "status=401|code=190|subcode=463|category=auth|fields=-"
+  },
+  {
+    "name": "rate_limit_status_429_has_priority_over_not_found_subcode",
+    "status_code": 429,
+    "code": 100,
+    "subcode": 33,
+    "expected": {
+      "category": "rate_limit",
+      "summary": "Meta API rate limits were reached.",
+      "actions": [
+        "Retry with exponential backoff.",
+        "Reduce request concurrency for this account/app."
+      ]
+    },
+    "expected_signature": "status=429|code=100|subcode=33|category=rate_limit|fields=-"
+  },
+  {
+    "name": "unknown_code_keeps_extracted_fields",
+    "status_code": 400,
+    "code": 987654,
+    "subcode": 4242,
+    "diagnostics": {
+      "error_data": {
+        "blame_field_specs": [
+          [
+            "payload",
+            "bar"
+          ],
+          [
+            "payload",
+            "foo"
+          ]
+        ]
+      }
+    },
+    "expected": {
+      "category": "unknown",
+      "summary": "Unknown Meta API failure.",
+      "actions": [
+        "Inspect `error.diagnostics` and `fbtrace_id` for the full Meta response.",
+        "Adjust request inputs and retry after validation."
+      ],
+      "fields": [
+        "payload.bar",
+        "payload.foo"
+      ]
+    },
+    "expected_signature": "status=400|code=987654|subcode=4242|category=unknown|fields=payload.bar,payload.foo"
+  },
+  {
+    "name": "server_5xx_maps_to_transient",
+    "status_code": 503,
+    "code": 1,
+    "subcode": 0,
+    "expected": {
+      "category": "transient",
+      "summary": "Meta API returned a transient server-side failure.",
+      "actions": [
+        "Retry with backoff.",
+        "Capture fbtrace_id if failures continue across retries."
+      ]
+    },
+    "expected_signature": "status=503|code=1|subcode=0|category=transient|fields=-"
+  }
+]

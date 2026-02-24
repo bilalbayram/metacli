@@ -27,6 +27,13 @@ jobs:
       - name: Verify modules
         run: go mod tidy && git diff --exit-code
 
+      - name: Run regression drift gates
+        run: |
+          go test ./internal/smoke ./internal/graph ./internal/output \
+            -count=1 \
+            -run 'TestFailureFromErrorRegressionFixtures|TestClassifyRemediationRegressionFixtures|TestEnvelopeContractSnapshot' \
+            -v
+
       - name: Run unit and integration tests
         run: go test ./... -count=1 -v
 

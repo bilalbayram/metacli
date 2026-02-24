@@ -1,0 +1,84 @@
+[
+  {
+    "name": "generic_error_signature_is_stable",
+    "step": "account_context",
+    "optional": false,
+    "blocking": true,
+    "error": {
+      "kind": "generic",
+      "message": "  transport timeout  "
+    },
+    "expected": {
+      "type": "error",
+      "message": "transport timeout"
+    },
+    "expected_signature": "type=error|status=0|code=0|subcode=0|message=transport timeout"
+  },
+  {
+    "name": "api_error_preserves_not_found_subcode_signature",
+    "step": "campaign_create",
+    "optional": false,
+    "blocking": true,
+    "error": {
+      "kind": "api",
+      "type": "GraphMethodException",
+      "message": "Unsupported post request",
+      "status_code": 400,
+      "code": 100,
+      "subcode": 33,
+      "fbtrace_id": "trace-1"
+    },
+    "expected": {
+      "type": "GraphMethodException",
+      "message": "Unsupported post request",
+      "status_code": 400,
+      "code": 100,
+      "error_subcode": 33
+    },
+    "expected_signature": "type=GraphMethodException|status=400|code=100|subcode=33|message=Unsupported post request"
+  },
+  {
+    "name": "api_error_falls_back_to_generic_signature_when_type_and_message_are_missing",
+    "step": "audience_create",
+    "optional": true,
+    "blocking": true,
+    "error": {
+      "kind": "api",
+      "message": "",
+      "status_code": 403,
+      "code": 200,
+      "subcode": 0,
+      "fbtrace_id": "trace-empty"
+    },
+    "expected": {
+      "type": "api_error",
+      "message": "meta api error type= code=200 subcode=0 fbtrace_id=trace-empty:",
+      "status_code": 403,
+      "code": 200
+    },
+    "expected_signature": "type=api_error|status=403|code=200|subcode=0|message=meta api error type= code=200 subcode=0 fbtrace_id=trace-empty:"
+  },
+  {
+    "name": "api_error_keeps_permission_subcode_signature",
+    "step": "catalog_upload",
+    "optional": true,
+    "blocking": true,
+    "error": {
+      "kind": "api",
+      "type": "OAuthException",
+      "message": "Permissions error",
+      "status_code": 403,
+      "code": 10,
+      "subcode": 2018336,
+      "fbtrace_id": "trace-2"
+    },
+    "expected": {
+      "type": "OAuthException",
+      "message": "Permissions error",
+      "status_code": 403,
+      "code": 10,
+      "error_subcode": 2018336
+    },
+    "expected_signature": "type=OAuthException|status=403|code=10|subcode=2018336|message=Permissions error"
+  }
+]

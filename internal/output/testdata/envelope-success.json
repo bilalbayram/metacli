@@ -1,0 +1,25 @@
+{
+  "command": "meta campaign create",
+  "contract_version": "1.0",
+  "data": {
+    "id": "cmp_1001",
+    "status": "PAUSED"
+  },
+  "paging": {
+    "cursors": {
+      "after": "b",
+      "before": "a"
+    },
+    "next": "https://graph.facebook.com/v25.0/act_1/campaigns?after=b"
+  },
+  "rate_limit": {
+    "x-app-usage": {
+      "call_count": 13,
+      "total_cputime": 9,
+      "total_time": 8
+    }
+  },
+  "request_id": "REQUEST_ID_PLACEHOLDER",
+  "success": true,
+  "timestamp": "TIMESTAMP_PLACEHOLDER"
+}

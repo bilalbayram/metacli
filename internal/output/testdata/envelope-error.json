@@ -1,0 +1,37 @@
+{
+  "command": "meta ad create",
+  "contract_version": "1.0",
+  "error": {
+    "code": 100,
+    "diagnostics": {
+      "error_data": {
+        "blame_field_specs": [
+          [
+            "campaign_id"
+          ]
+        ]
+      },
+      "error_user_title": "Unsupported post request"
+    },
+    "error_subcode": 33,
+    "fbtrace_id": "trace-1",
+    "message": "Unsupported post request",
+    "remediation": {
+      "actions": [
+        "Check object IDs and endpoint path for typos.",
+        "Ensure the object belongs to the authenticated account context."
+      ],
+      "category": "not_found",
+      "fields": [
+        "campaign_id"
+      ],
+      "summary": "Referenced object or edge does not exist for this request."
+    },
+    "retryable": false,
+    "status_code": 400,
+    "type": "GraphMethodException"
+  },
+  "request_id": "REQUEST_ID_PLACEHOLDER",
+  "success": false,
+  "timestamp": "TIMESTAMP_PLACEHOLDER"
+}

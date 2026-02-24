@@ -47,6 +47,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewInsightsCommand(runtime))
 	cmd.AddCommand(command.NewLintCommand(runtime))
 	cmd.AddCommand(command.NewSchemaCommand(runtime))
+	cmd.AddCommand(command.NewDoctorCommand(runtime))
 	cmd.AddCommand(command.NewChangelogCommand(runtime))
 	cmd.AddCommand(command.NewIGCommand(runtime))
 	cmd.AddCommand(command.NewWACommand(runtime))

@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/plugin"
@@ -10,8 +11,14 @@ import (
 )
 
 type namespaceCapability struct {
-	Name        string
-	Description string
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type namespaceCapabilityStatus struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Supported   bool   `json:"supported"`
 }
 
 type namespaceBootstrapSpec struct {
@@ -21,8 +28,8 @@ type namespaceBootstrapSpec struct {
 	Capabilities []namespaceCapability
 }
 
-func NewWACommand(runtime Runtime) *cobra.Command {
-	return newNamespaceBootstrapCommand(runtime, namespaceBootstrapSpec{
+var builtinNamespaceBootstrapSpecs = []namespaceBootstrapSpec{
+	{
 		PluginID:  "whatsapp",
 		Namespace: "wa",
 		Short:     "WhatsApp Cloud API commands",
@@ -30,7 +37,74 @@ func NewWACommand(runtime Runtime) *cobra.Command {
 			{Name: "send-message", Description: "Send WhatsApp Cloud API messages"},
 			{Name: "media-upload", Description: "Upload media assets for WhatsApp messages"},
 		},
+	},
+	{
+		PluginID:  "messenger",
+		Namespace: "msgr",
+		Short:     "Messenger Platform commands",
+		Capabilities: []namespaceCapability{
+			{Name: "send-api", Description: "Send messages through the Messenger Send API"},
+			{Name: "webhook", Description: "Consume Messenger webhook events"},
+		},
+	},
+	{
+		PluginID:  "threads",
+		Namespace: "threads",
+		Short:     "Threads API commands",
+		Capabilities: []namespaceCapability{
+			{Name: "publish-post", Description: "Publish text or media posts via Threads API"},
+			{Name: "read-insights", Description: "Fetch Threads media and account insights"},
+		},
+	},
+	{
+		PluginID:  "capi",
+		Namespace: "capi",
+		Short:     "Conversions API commands",
+		Capabilities: []namespaceCapability{
+			{Name: "send-event", Description: "Send conversion events to /events endpoint"},
+			{Name: "test-event", Description: "Validate conversion payloads using test_event_code"},
+		},
+	},
+}
+
+func NewWACommand(runtime Runtime) *cobra.Command {
+	return newNamespaceBootstrapCommandForNamespace(runtime, "wa")
+}
+
+func newNamespaceBootstrapCommandForNamespace(runtime Runtime, namespace string) *cobra.Command {
+	spec, err := namespaceBootstrapSpecFor(namespace)
+	if err != nil {
+		return newPluginErrorCommand(namespace, err)
+	}
+	return newNamespaceBootstrapCommand(runtime, spec)
+}
+
+func namespaceBootstrapSpecs() []namespaceBootstrapSpec {
+	specs := make([]namespaceBootstrapSpec, 0, len(builtinNamespaceBootstrapSpecs))
+	for _, spec := range builtinNamespaceBootstrapSpecs {
+		capabilities := make([]namespaceCapability, len(spec.Capabilities))
+		copy(capabilities, spec.Capabilities)
+		spec.Capabilities = capabilities
+		specs = append(specs, spec)
+	}
+
+	sort.Slice(specs, func(i, j int) bool {
+		return specs[i].Namespace < specs[j].Namespace
 	})
+	return specs
+}
+
+func namespaceBootstrapSpecFor(namespace string) (namespaceBootstrapSpec, error) {
+	requested := strings.TrimSpace(namespace)
+	if requested == "" {
+		return namespaceBootstrapSpec{}, errors.New("namespace is required")
+	}
+	for _, spec := range namespaceBootstrapSpecs() {
+		if spec.Namespace == requested {
+			return spec, nil
+		}
+	}
+	return namespaceBootstrapSpec{}, fmt.Errorf("namespace %q bootstrap spec is not registered", namespace)
 }
 
 func newNamespaceBootstrapCommand(runtime Runtime, spec namespaceBootstrapSpec) *cobra.Command {
@@ -97,18 +171,42 @@ func newNamespaceHealthCommand(runtime Runtime, pluginRuntime plugin.Runtime, sp
 }
 
 func newNamespaceCapabilityCommand(runtime Runtime, pluginRuntime plugin.Runtime, spec namespaceBootstrapSpec) *cobra.Command {
-	var name string
+	var (
+		name     string
+		discover bool
+	)
 	cmd := &cobra.Command{
 		Use:   "capability",
 		Short: "Validate namespace capability support",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			traceCommand := "capability"
+			if discover {
+				traceCommand = "capability-discover"
+			}
 			if err := pluginRuntime.Trace(plugin.TraceEvent{
 				PluginID:  spec.PluginID,
 				Namespace: spec.Namespace,
-				Command:   "capability",
+				Command:   traceCommand,
 			}); err != nil {
 				return writeCommandError(cmd, runtime, fmt.Sprintf("meta %s capability", spec.Namespace), err)
+			}
+
+			if discover {
+				if strings.TrimSpace(name) != "" {
+					return writeCommandError(cmd, runtime, fmt.Sprintf("meta %s capability", spec.Namespace), errors.New("capability discovery does not accept --name"))
+				}
+
+				capabilities, err := discoverNamespaceCapabilities(spec)
+				if err != nil {
+					return writeCommandError(cmd, runtime, fmt.Sprintf("meta %s capability", spec.Namespace), err)
+				}
+				return writeSuccess(cmd, runtime, fmt.Sprintf("meta %s capability", spec.Namespace), map[string]any{
+					"namespace":        spec.Namespace,
+					"plugin":           spec.PluginID,
+					"capabilities":     capabilities,
+					"capability_count": len(capabilities),
+				}, nil, nil)
 			}
 
 			capability, err := findNamespaceCapability(spec, name)
@@ -127,6 +225,7 @@ func newNamespaceCapabilityCommand(runtime Runtime, pluginRuntime plugin.Runtime
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Capability name")
+	cmd.Flags().BoolVar(&discover, "discover", false, "Discover supported capabilities")
 	return cmd
 }
 
@@ -173,4 +272,39 @@ func findNamespaceCapability(spec namespaceBootstrapSpec, requested string) (*na
 		}
 	}
 	return nil, fmt.Errorf("unsupported capability %q for namespace %q", requested, spec.Namespace)
+}
+
+func discoverNamespaceCapabilities(spec namespaceBootstrapSpec) ([]namespaceCapabilityStatus, error) {
+	if len(spec.Capabilities) == 0 {
+		return nil, errors.New("capabilities are required")
+	}
+
+	seen := map[string]struct{}{}
+	capabilities := make([]namespaceCapabilityStatus, 0, len(spec.Capabilities))
+	for _, capability := range spec.Capabilities {
+		name := strings.TrimSpace(capability.Name)
+		if name == "" {
+			return nil, errors.New("capability name is required")
+		}
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("duplicate capability %q", capability.Name)
+		}
+		seen[name] = struct{}{}
+
+		description := strings.TrimSpace(capability.Description)
+		if description == "" {
+			return nil, fmt.Errorf("capability %q description is required", capability.Name)
+		}
+
+		capabilities = append(capabilities, namespaceCapabilityStatus{
+			Name:        name,
+			Description: description,
+			Supported:   true,
+		})
+	}
+
+	sort.Slice(capabilities, func(i, j int) bool {
+		return capabilities[i].Name < capabilities[j].Name
+	})
+	return capabilities, nil
 }

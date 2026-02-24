@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -9,10 +10,11 @@ import (
 )
 
 type namespaceCommandCase struct {
-	namespace           string
-	pluginID            string
-	supportedCapability string
-	newCommand          func(Runtime) *cobra.Command
+	namespace              string
+	pluginID               string
+	supportedCapability    string
+	discoveredCapabilities []string
+	newCommand             func(Runtime) *cobra.Command
 }
 
 func TestNamespaceBootstrapCommandsIncludeHealthAndCapability(t *testing.T) {
@@ -115,6 +117,110 @@ func TestNamespaceBootstrapCapabilityWritesSuccessEnvelope(t *testing.T) {
 	}
 }
 
+func TestNamespaceBootstrapCapabilityDiscoveryWritesSuccessEnvelope(t *testing.T) {
+	for _, tc := range namespaceCommandCases() {
+		tc := tc
+		t.Run(tc.namespace, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			errOutput := &bytes.Buffer{}
+			cmd := tc.newCommand(Runtime{Output: stringPtr("json")})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetOut(output)
+			cmd.SetErr(errOutput)
+			cmd.SetArgs([]string{"capability", "--discover"})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute capability discovery: %v", err)
+			}
+
+			envelope := decodeEnvelope(t, output.Bytes())
+			assertEnvelopeBasics(t, envelope, "meta "+tc.namespace+" capability")
+			data, ok := envelope["data"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected object payload, got %T", envelope["data"])
+			}
+			if got := data["namespace"]; got != tc.namespace {
+				t.Fatalf("unexpected namespace %v", got)
+			}
+			if got := data["plugin"]; got != tc.pluginID {
+				t.Fatalf("unexpected plugin %v", got)
+			}
+
+			capabilities, ok := data["capabilities"].([]any)
+			if !ok {
+				t.Fatalf("expected capabilities array, got %T", data["capabilities"])
+			}
+			if got := len(capabilities); got != len(tc.discoveredCapabilities) {
+				t.Fatalf("unexpected capability count %d", got)
+			}
+			if got := int(data["capability_count"].(float64)); got != len(tc.discoveredCapabilities) {
+				t.Fatalf("unexpected capability_count %v", data["capability_count"])
+			}
+
+			for idx, raw := range capabilities {
+				capability, ok := raw.(map[string]any)
+				if !ok {
+					t.Fatalf("expected capability object, got %T", raw)
+				}
+				if got := capability["name"]; got != tc.discoveredCapabilities[idx] {
+					t.Fatalf("unexpected capability order %v", got)
+				}
+				if supported, _ := capability["supported"].(bool); !supported {
+					t.Fatalf("expected supported=true, got %v", capability["supported"])
+				}
+			}
+			if errOutput.Len() != 0 {
+				t.Fatalf("expected empty stderr, got %q", errOutput.String())
+			}
+		})
+	}
+}
+
+func TestNamespaceBootstrapCapabilityDiscoveryIsDeterministic(t *testing.T) {
+	for _, tc := range namespaceCommandCases() {
+		tc := tc
+		t.Run(tc.namespace, func(t *testing.T) {
+			output := &bytes.Buffer{}
+			errOutput := &bytes.Buffer{}
+			cmd := tc.newCommand(Runtime{Output: stringPtr("json")})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetOut(output)
+			cmd.SetErr(errOutput)
+
+			cmd.SetArgs([]string{"capability", "--discover"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute first capability discovery: %v", err)
+			}
+			firstEnvelope := decodeEnvelope(t, output.Bytes())
+			firstData, ok := firstEnvelope["data"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected first data object, got %T", firstEnvelope["data"])
+			}
+
+			output.Reset()
+			errOutput.Reset()
+			cmd.SetArgs([]string{"capability", "--discover"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute second capability discovery: %v", err)
+			}
+			secondEnvelope := decodeEnvelope(t, output.Bytes())
+			secondData, ok := secondEnvelope["data"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected second data object, got %T", secondEnvelope["data"])
+			}
+
+			if !reflect.DeepEqual(firstData, secondData) {
+				t.Fatalf("expected deterministic discovery data, first=%v second=%v", firstData, secondData)
+			}
+			if errOutput.Len() != 0 {
+				t.Fatalf("expected empty stderr, got %q", errOutput.String())
+			}
+		})
+	}
+}
+
 func TestNamespaceBootstrapCapabilityFailsForMissingOrUnsupportedCapability(t *testing.T) {
 	for _, tc := range namespaceCommandCases() {
 		tc := tc
@@ -133,6 +239,11 @@ func TestNamespaceBootstrapCapabilityFailsForMissingOrUnsupportedCapability(t *t
 					name:      "unsupported",
 					args:      []string{"capability", "--name", "unsupported-cap"},
 					errorText: "unsupported capability",
+				},
+				{
+					name:      "discover with name",
+					args:      []string{"capability", "--discover", "--name", tc.supportedCapability},
+					errorText: "capability discovery does not accept --name",
 				},
 			}
 
@@ -215,28 +326,32 @@ func TestNamespaceBootstrapFailsFastOnMalformedSpec(t *testing.T) {
 func namespaceCommandCases() []namespaceCommandCase {
 	return []namespaceCommandCase{
 		{
-			namespace:           "wa",
-			pluginID:            "whatsapp",
-			supportedCapability: "send-message",
-			newCommand:          NewWACommand,
+			namespace:              "wa",
+			pluginID:               "whatsapp",
+			supportedCapability:    "send-message",
+			discoveredCapabilities: []string{"media-upload", "send-message"},
+			newCommand:             NewWACommand,
 		},
 		{
-			namespace:           "msgr",
-			pluginID:            "messenger",
-			supportedCapability: "send-api",
-			newCommand:          NewMSGRCommand,
+			namespace:              "msgr",
+			pluginID:               "messenger",
+			supportedCapability:    "send-api",
+			discoveredCapabilities: []string{"send-api", "webhook"},
+			newCommand:             NewMSGRCommand,
 		},
 		{
-			namespace:           "threads",
-			pluginID:            "threads",
-			supportedCapability: "publish-post",
-			newCommand:          NewThreadsCommand,
+			namespace:              "threads",
+			pluginID:               "threads",
+			supportedCapability:    "publish-post",
+			discoveredCapabilities: []string{"publish-post", "read-insights"},
+			newCommand:             NewThreadsCommand,
 		},
 		{
-			namespace:           "capi",
-			pluginID:            "capi",
-			supportedCapability: "send-event",
-			newCommand:          NewCAPICommand,
+			namespace:              "capi",
+			pluginID:               "capi",
+			supportedCapability:    "send-event",
+			discoveredCapabilities: []string{"send-event", "test-event"},
+			newCommand:             NewCAPICommand,
 		},
 	}
 }

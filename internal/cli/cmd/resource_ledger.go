@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -23,8 +24,11 @@ type trackedResourceInput struct {
 }
 
 func persistTrackedResource(input trackedResourceInput) error {
-	ledgerPath, err := resolveResourceLedgerPath("")
+	ledgerPath, explicitPath, err := resolveResourceLedgerPathForTracking("")
 	if err != nil {
+		if !explicitPath {
+			return nil
+		}
 		return fmt.Errorf("resolve resource ledger path: %w", err)
 	}
 
@@ -40,23 +44,17 @@ func persistTrackedResource(input trackedResourceInput) error {
 		Metadata:      normalizeTrackedResourceMetadata(input.Metadata),
 	}
 	if _, err := ops.AppendResourceLedgerEntry(ledgerPath, entry); err != nil {
+		if !explicitPath && isResourceLedgerPathOrWriteError(err) {
+			return nil
+		}
 		return fmt.Errorf("persist tracked resource in %s: %w", ledgerPath, err)
 	}
 	return nil
 }
 
 func resolveResourceLedgerPath(path string) (string, error) {
-	resolvedPath := strings.TrimSpace(path)
-	if resolvedPath != "" {
-		return resolvedPath, nil
-	}
-
-	envPath := strings.TrimSpace(os.Getenv(resourceLedgerPathEnv))
-	if envPath != "" {
-		return envPath, nil
-	}
-
-	return ops.DefaultResourceLedgerPath()
+	resolvedPath, _, err := resolveResourceLedgerPathForTracking(path)
+	return resolvedPath, err
 }
 
 func normalizeTrackedResourceMetadata(metadata map[string]string) map[string]string {
@@ -76,4 +74,45 @@ func normalizeTrackedResourceMetadata(metadata map[string]string) map[string]str
 		return nil
 	}
 	return normalized
+}
+
+func resolveResourceLedgerPathForTracking(path string) (string, bool, error) {
+	resolvedPath := strings.TrimSpace(path)
+	if resolvedPath != "" {
+		return resolvedPath, true, nil
+	}
+
+	envPath := strings.TrimSpace(os.Getenv(resourceLedgerPathEnv))
+	if envPath != "" {
+		return envPath, true, nil
+	}
+
+	defaultPath, err := ops.DefaultResourceLedgerPath()
+	if err != nil {
+		return "", false, err
+	}
+	return defaultPath, false, nil
+}
+
+func isResourceLedgerPathOrWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return true
+	}
+
+	var syscallErr *os.SyscallError
+	if errors.As(err, &syscallErr) {
+		return true
+	}
+
+	return strings.Contains(err.Error(), "resource ledger path ") && strings.Contains(err.Error(), " is a directory")
 }

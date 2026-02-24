@@ -76,6 +76,48 @@ func TestPersistTrackedResourceUsesDefaultResolvedLedgerPath(t *testing.T) {
 	}
 }
 
+func TestPersistTrackedResourceAllowsImplicitDefaultLedgerWriteFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(resourceLedgerPathEnv, "")
+
+	blockingPath := filepath.Join(home, ".meta")
+	if err := os.WriteFile(blockingPath, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocking default ledger path: %v", err)
+	}
+
+	if err := persistTrackedResource(trackedResourceInput{
+		Command:       "meta ad create",
+		ResourceKind:  ops.ResourceKindAd,
+		ResourceID:    "ad_default_1001",
+		CleanupAction: ops.CleanupActionPause,
+	}); err != nil {
+		t.Fatalf("persist tracked resource with implicit default ledger path failure should not error: %v", err)
+	}
+}
+
+func TestPersistTrackedResourceFailsForExplicitEnvLedgerWriteFailure(t *testing.T) {
+	blockingPath := filepath.Join(t.TempDir(), "ledger-parent-file")
+	if err := os.WriteFile(blockingPath, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write blocking env ledger path: %v", err)
+	}
+	ledgerPath := filepath.Join(blockingPath, "resource-ledger.json")
+	t.Setenv(resourceLedgerPathEnv, ledgerPath)
+
+	err := persistTrackedResource(trackedResourceInput{
+		Command:       "meta ad create",
+		ResourceKind:  ops.ResourceKindAd,
+		ResourceID:    "ad_env_1001",
+		CleanupAction: ops.CleanupActionPause,
+	})
+	if err == nil {
+		t.Fatalf("expected explicit env ledger path write failure to return error")
+	}
+	if !strings.Contains(err.Error(), "persist tracked resource in "+ledgerPath) {
+		t.Fatalf("unexpected explicit env ledger error: %v", err)
+	}
+}
+
 func TestOpsCleanupCommandReadsTrackedResourcesFromEnvLedgerPath(t *testing.T) {
 	ledgerPath := filepath.Join(t.TempDir(), "resource-ledger.json")
 	t.Setenv(resourceLedgerPathEnv, ledgerPath)

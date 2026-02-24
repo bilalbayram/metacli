@@ -451,11 +451,7 @@ func enforceAdsetBudgetFloorChecks(
 
 	floor, exists := adsetBudgetFloorMinorUnitsByCurrency[currency]
 	if !exists {
-		return fmt.Errorf(
-			"ad set budget floor check blocked mutation: unsupported account currency %q; remediation: use one of [%s] or extend currency floor rules",
-			currency,
-			strings.Join(sortedAdsetSupportedFloorCurrencies(), ", "),
-		)
+		return nil
 	}
 
 	for _, field := range []string{"daily_budget", "lifetime_budget"} {
@@ -585,15 +581,6 @@ func sortedAdsetSupportedBidStrategies() []string {
 	values := make([]string, 0, len(adsetBidStrategyRequirements))
 	for strategy := range adsetBidStrategyRequirements {
 		values = append(values, strategy)
-	}
-	sort.Strings(values)
-	return values
-}
-
-func sortedAdsetSupportedFloorCurrencies() []string {
-	values := make([]string, 0, len(adsetBudgetFloorMinorUnitsByCurrency))
-	for currency := range adsetBudgetFloorMinorUnitsByCurrency {
-		values = append(values, currency)
 	}
 	sort.Strings(values)
 	return values

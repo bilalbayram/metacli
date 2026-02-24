@@ -311,6 +311,94 @@ func TestAdsetCreateFailsWhenBudgetIsBelowCurrencyFloor(t *testing.T) {
 	}
 }
 
+func TestAdsetCreateBudgetFloorAllowsUnknownCurrency(t *testing.T) {
+	stub := &adsetQueuedHTTPClient{
+		t: t,
+		responses: []adsetQueuedResponse{
+			{
+				body: `{"currency":"AED"}`,
+				assert: func(t *testing.T, req *http.Request, _ string) {
+					t.Helper()
+					if req.Method != http.MethodGet {
+						t.Fatalf("unexpected method %q", req.Method)
+					}
+					if req.URL.Path != "/v25.0/act_1234" {
+						t.Fatalf("unexpected currency-lookup path %q", req.URL.Path)
+					}
+					if got := req.URL.Query().Get("fields"); got != "currency" {
+						t.Fatalf("unexpected currency-lookup fields query %q", got)
+					}
+				},
+			},
+			{
+				body: `{"id":"778"}`,
+				assert: func(t *testing.T, req *http.Request, body string) {
+					t.Helper()
+					if req.Method != http.MethodPost {
+						t.Fatalf("unexpected method %q", req.Method)
+					}
+					if req.URL.Path != "/v25.0/act_1234/adsets" {
+						t.Fatalf("unexpected mutation path %q", req.URL.Path)
+					}
+					form, err := url.ParseQuery(body)
+					if err != nil {
+						t.Fatalf("parse form body: %v", err)
+					}
+					if got := form.Get("daily_budget"); got != "1" {
+						t.Fatalf("unexpected daily_budget %q", got)
+					}
+				},
+			},
+		},
+	}
+	schemaDir := writeAdsetSchemaPack(t)
+	useAdsetDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAdsetCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--params", "name=Prospecting,campaign_id=cmp_1,daily_budget=1",
+		"--confirm-budget-change",
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute adset create: %v", err)
+	}
+	if stub.calls != len(stub.responses) {
+		t.Fatalf("expected %d graph calls, got %d", len(stub.responses), stub.calls)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta adset create")
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
 func TestAdsetUpdateFailsWhenBudgetIsBelowCurrencyFloor(t *testing.T) {
 	stub := &adsetQueuedHTTPClient{
 		t: t,

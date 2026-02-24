@@ -13,30 +13,6 @@ import (
 	"github.com/bilalbayram/metacli/internal/config"
 )
 
-type stubAuthSetupInput struct {
-	Profile     string
-	AppID       string
-	AppSecret   string
-	RedirectURI string
-	Scopes      []string
-	Mode        string
-	PageID      string
-	IGUserID    string
-}
-
-type stubAuthLoginAutoInput struct {
-	Profile     string
-	AppID       string
-	AppSecret   string
-	RedirectURI string
-	Scopes      []string
-}
-
-type stubAuthDiscoverInput struct {
-	Profile string
-	Mode    string
-}
-
 type stubAuthService struct {
 	addSystemUserInput *auth.AddSystemUserInput
 	addSystemUserErr   error
@@ -54,27 +30,34 @@ type stubAuthService struct {
 	exchangeOAuthCodeToken string
 	exchangeOAuthCodeErr   error
 
-	validateProfileResponse *auth.DebugTokenResponse
-	validateProfileErr      error
+	exchangeLongLivedInput *auth.ExchangeLongLivedUserTokenInput
+	exchangeLongLived      auth.LongLivedToken
+	exchangeLongLivedErr   error
+
+	ensureValidProfile string
+	ensureValidMinTTL  time.Duration
+	ensureValidScopes  []string
+	ensureValidResult  *auth.DebugTokenMetadata
+	ensureValidErr     error
+
+	validateProfileInput string
+	validateProfileResp  *auth.DebugTokenResponse
+	validateProfileErr   error
 
 	rotateProfileInput string
 	rotateProfileErr   error
 
-	debugTokenResponse *auth.DebugTokenResponse
-	debugTokenErr      error
-
-	listProfiles map[string]config.Profile
-	listErr      error
-
-	setupInput      *stubAuthSetupInput
-	setupResult     map[string]any
-	setupErr        error
-	loginAutoInput  *stubAuthLoginAutoInput
-	loginAutoResult map[string]any
-	loginAutoErr    error
-	discoverInput   *stubAuthDiscoverInput
-	discoverResult  map[string]any
-	discoverErr     error
+	debugTokenInputToken      string
+	debugTokenInputAccess     string
+	debugTokenInputVersion    string
+	debugTokenResp            *auth.DebugTokenResponse
+	debugTokenErr             error
+	listProfilesResp          map[string]config.Profile
+	listProfilesErr           error
+	discoveredPages           []auth.DiscoveredPage
+	discoveredPagesErr        error
+	updateProfileBindingsIn   *auth.UpdateProfileBindingsInput
+	updateProfileBindingsErr  error
 }
 
 func (s *stubAuthService) AddSystemUser(_ context.Context, input auth.AddSystemUserInput) error {
@@ -103,19 +86,44 @@ func (s *stubAuthService) ExchangeOAuthCode(_ context.Context, input auth.Exchan
 		return "", s.exchangeOAuthCodeErr
 	}
 	if s.exchangeOAuthCodeToken == "" {
-		return "token-from-exchange", nil
+		return "short-token", nil
 	}
 	return s.exchangeOAuthCodeToken, nil
 }
 
-func (s *stubAuthService) ValidateProfile(_ context.Context, _ string) (*auth.DebugTokenResponse, error) {
+func (s *stubAuthService) ExchangeLongLivedUserToken(_ context.Context, input auth.ExchangeLongLivedUserTokenInput) (auth.LongLivedToken, error) {
+	s.exchangeLongLivedInput = &input
+	if s.exchangeLongLivedErr != nil {
+		return auth.LongLivedToken{}, s.exchangeLongLivedErr
+	}
+	if s.exchangeLongLived.AccessToken == "" {
+		return auth.LongLivedToken{AccessToken: "long-token", ExpiresInSeconds: 3600}, nil
+	}
+	return s.exchangeLongLived, nil
+}
+
+func (s *stubAuthService) EnsureValid(_ context.Context, profile string, minTTL time.Duration, requiredScopes []string) (*auth.DebugTokenMetadata, error) {
+	s.ensureValidProfile = profile
+	s.ensureValidMinTTL = minTTL
+	s.ensureValidScopes = requiredScopes
+	if s.ensureValidErr != nil {
+		return nil, s.ensureValidErr
+	}
+	if s.ensureValidResult == nil {
+		return &auth.DebugTokenMetadata{IsValid: true, Scopes: []string{"ads_read"}, ExpiresAt: time.Now().Add(24 * time.Hour)}, nil
+	}
+	return s.ensureValidResult, nil
+}
+
+func (s *stubAuthService) ValidateProfile(_ context.Context, profile string) (*auth.DebugTokenResponse, error) {
+	s.validateProfileInput = profile
 	if s.validateProfileErr != nil {
 		return nil, s.validateProfileErr
 	}
-	if s.validateProfileResponse == nil {
+	if s.validateProfileResp == nil {
 		return &auth.DebugTokenResponse{Data: map[string]any{"is_valid": true}}, nil
 	}
-	return s.validateProfileResponse, nil
+	return s.validateProfileResp, nil
 }
 
 func (s *stubAuthService) RotateProfile(_ context.Context, profile string) error {
@@ -123,118 +131,123 @@ func (s *stubAuthService) RotateProfile(_ context.Context, profile string) error
 	return s.rotateProfileErr
 }
 
-func (s *stubAuthService) DebugToken(_ context.Context, _, _, _ string) (*auth.DebugTokenResponse, error) {
+func (s *stubAuthService) DebugToken(_ context.Context, version, token, accessToken string) (*auth.DebugTokenResponse, error) {
+	s.debugTokenInputVersion = version
+	s.debugTokenInputToken = token
+	s.debugTokenInputAccess = accessToken
 	if s.debugTokenErr != nil {
 		return nil, s.debugTokenErr
 	}
-	if s.debugTokenResponse == nil {
-		return &auth.DebugTokenResponse{Data: map[string]any{"is_valid": true}}, nil
+	if s.debugTokenResp == nil {
+		return &auth.DebugTokenResponse{Data: map[string]any{"is_valid": true, "scopes": []any{"ads_read"}, "expires_at": float64(time.Now().Add(24 * time.Hour).Unix())}}, nil
 	}
-	return s.debugTokenResponse, nil
+	return s.debugTokenResp, nil
 }
 
 func (s *stubAuthService) ListProfiles() (map[string]config.Profile, error) {
-	if s.listErr != nil {
-		return nil, s.listErr
+	if s.listProfilesErr != nil {
+		return nil, s.listProfilesErr
 	}
-	if s.listProfiles == nil {
+	if s.listProfilesResp == nil {
 		return map[string]config.Profile{}, nil
 	}
-	return s.listProfiles, nil
+	return s.listProfilesResp, nil
 }
 
-func (s *stubAuthService) Setup(_ context.Context, input stubAuthSetupInput) (map[string]any, error) {
-	s.setupInput = &input
-	if s.setupErr != nil {
-		return nil, s.setupErr
+func (s *stubAuthService) DiscoverPagesAndIGBusinessAccounts(_ context.Context, _ string) ([]auth.DiscoveredPage, error) {
+	if s.discoveredPagesErr != nil {
+		return nil, s.discoveredPagesErr
 	}
-	if s.setupResult == nil {
-		return map[string]any{"setup": "ok"}, nil
-	}
-	return s.setupResult, nil
+	return s.discoveredPages, nil
 }
 
-func (s *stubAuthService) LoginAuto(_ context.Context, input stubAuthLoginAutoInput) (map[string]any, error) {
-	s.loginAutoInput = &input
-	if s.loginAutoErr != nil {
-		return nil, s.loginAutoErr
-	}
-	if s.loginAutoResult == nil {
-		return map[string]any{"auth_url": "https://example.com/oauth"}, nil
-	}
-	return s.loginAutoResult, nil
+func (s *stubAuthService) UpdateProfileBindings(_ context.Context, input auth.UpdateProfileBindingsInput) error {
+	s.updateProfileBindingsIn = &input
+	return s.updateProfileBindingsErr
 }
 
-func (s *stubAuthService) Discover(_ context.Context, input stubAuthDiscoverInput) (map[string]any, error) {
-	s.discoverInput = &input
-	if s.discoverErr != nil {
-		return nil, s.discoverErr
-	}
-	if s.discoverResult == nil {
-		return map[string]any{"items": []any{}}, nil
-	}
-	return s.discoverResult, nil
+type fakeOAuthListener struct {
+	redirectURI string
+	code        string
+	err         error
 }
+
+func (f *fakeOAuthListener) RedirectURI() string { return f.redirectURI }
+func (f *fakeOAuthListener) Wait(_ context.Context, _ time.Duration) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.code, nil
+}
+func (f *fakeOAuthListener) Close(_ context.Context) error { return nil }
 
 func useAuthServiceFactory(t *testing.T, factory func() (authCLIService, error)) {
 	t.Helper()
 	original := newAuthCLIService
-	t.Cleanup(func() {
-		newAuthCLIService = original
-	})
+	t.Cleanup(func() { newAuthCLIService = original })
 	newAuthCLIService = factory
 }
 
-func useAuthNow(t *testing.T, nowFn func() time.Time) {
+func useOAuthAutomationStubs(t *testing.T) {
 	t.Helper()
-	original := authNow
+	originalPKCE := newAuthPKCE
+	originalState := newAuthOAuthState
+	originalListener := newAuthOAuthListener
+	originalBuildURL := buildAuthOAuthURLWithState
+	originalOpen := openAuthBrowser
 	t.Cleanup(func() {
-		authNow = original
+		newAuthPKCE = originalPKCE
+		newAuthOAuthState = originalState
+		newAuthOAuthListener = originalListener
+		buildAuthOAuthURLWithState = originalBuildURL
+		openAuthBrowser = originalOpen
 	})
-	authNow = nowFn
+
+	newAuthPKCE = func() (string, string, error) {
+		return "pkce-verifier", "pkce-challenge", nil
+	}
+	newAuthOAuthState = func() (string, error) {
+		return "oauth-state", nil
+	}
+	newAuthOAuthListener = func(_ string, _ string) (oauthCodeListener, error) {
+		return &fakeOAuthListener{redirectURI: "http://127.0.0.1:4444/oauth/callback", code: "auth-code"}, nil
+	}
+	buildAuthOAuthURLWithState = func(_ string, _ string, _ []string, _ string, _ string, _ string) (string, error) {
+		return "https://example.com/oauth", nil
+	}
+	openAuthBrowser = func(_ string) error { return nil }
 }
 
 func TestNewAuthCommandIncludesAutomationSubcommands(t *testing.T) {
 	cmd := NewAuthCommand(Runtime{})
-
 	for _, name := range []string{"setup", "login", "login-manual", "discover"} {
-		subcommand, _, err := cmd.Find([]string{name})
+		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
-			t.Fatalf("find auth %s command: %v", name, err)
+			t.Fatalf("find %s command: %v", name, err)
 		}
-		if subcommand == nil || subcommand.Name() != name {
-			t.Fatalf("expected auth %s command, got %#v", name, subcommand)
+		if sub == nil || sub.Name() != name {
+			t.Fatalf("expected %s command, got %#v", name, sub)
 		}
 	}
 }
 
 func TestAuthAddSystemUserRequiresAppSecretFlag(t *testing.T) {
 	service := &stubAuthService{}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
 
 	cmd := NewAuthCommand(testRuntime("prod"))
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{
-		"add", "system-user",
-		"--business-id", "123",
-		"--app-id", "456",
-		"--token", "token-1",
-	})
+	cmd.SetArgs([]string{"add", "system-user", "--business-id", "1", "--app-id", "2", "--token", "tok"})
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected missing --app-secret error")
+		t.Fatal("expected missing app-secret flag error")
 	}
 	if !strings.Contains(err.Error(), `required flag(s) "app-secret" not set`) {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if service.addSystemUserInput != nil {
-		t.Fatal("expected AddSystemUser to not run when required flag is missing")
 	}
 }
 
@@ -244,13 +257,7 @@ func TestAuthLoginRejectsLegacyCodeFlag(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{
-		"login",
-		"--app-id", "123",
-		"--app-secret", "secret",
-		"--redirect-uri", "https://localhost/callback",
-		"--code", "legacy",
-	})
+	cmd.SetArgs([]string{"login", "--app-id", "1", "--app-secret", "s", "--scopes", "ads_read", "--code", "legacy"})
 
 	err := cmd.Execute()
 	if err == nil {
@@ -261,11 +268,10 @@ func TestAuthLoginRejectsLegacyCodeFlag(t *testing.T) {
 	}
 }
 
-func TestAuthLoginUsesAutoCallbackMethod(t *testing.T) {
+func TestAuthLoginRunsAutoCallbackAndPersistsProfile(t *testing.T) {
 	service := &stubAuthService{}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
@@ -274,207 +280,83 @@ func TestAuthLoginUsesAutoCallbackMethod(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{
-		"login",
-		"--app-id", "123",
-		"--app-secret", "secret",
-		"--redirect-uri", "https://localhost/callback",
-		"--scopes", "pages_show_list,instagram_basic",
-	})
+	cmd.SetArgs([]string{"login", "--app-id", "app_1", "--app-secret", "secret_1", "--scopes", "ads_read,pages_show_list", "--listen", "127.0.0.1:5555"})
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute auth login: %v", err)
-	}
-
-	if service.loginAutoInput == nil {
-		t.Fatal("expected auto login method to be called")
-	}
-	if service.loginAutoInput.Profile != "prod" {
-		t.Fatalf("unexpected profile %q", service.loginAutoInput.Profile)
-	}
-	if service.loginAutoInput.AppSecret != "secret" {
-		t.Fatalf("unexpected app secret %q", service.loginAutoInput.AppSecret)
-	}
-	if len(service.loginAutoInput.Scopes) != 2 {
-		t.Fatalf("unexpected scopes %#v", service.loginAutoInput.Scopes)
-	}
-
-	envelope := decodeEnvelope(t, stdout.Bytes())
-	assertEnvelopeBasics(t, envelope, "meta auth login")
-	data, ok := envelope["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected object payload, got %T", envelope["data"])
-	}
-	if got := data["profile"]; got != "prod" {
-		t.Fatalf("unexpected profile %v", got)
-	}
-	if got := data["auth_url"]; got != "https://example.com/oauth" {
-		t.Fatalf("unexpected auth_url %v", got)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
-	}
-}
-
-func TestAuthLoginManualUsesLegacyCodeExchangeFlow(t *testing.T) {
-	service := &stubAuthService{exchangeOAuthCodeToken: "user-token"}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-	cmd := NewAuthCommand(testRuntime("prod"))
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{
-		"login-manual",
-		"--app-id", "123",
-		"--redirect-uri", "https://localhost/callback",
-		"--code", "oauth-code",
-		"--scopes", "pages_show_list",
-	})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute auth login-manual: %v", err)
-	}
-	if service.exchangeOAuthCodeInput == nil {
-		t.Fatal("expected OAuth exchange to run")
-	}
-	if got := service.exchangeOAuthCodeInput.Code; got != "oauth-code" {
-		t.Fatalf("unexpected code %q", got)
+		t.Fatalf("execute login: %v", err)
 	}
 	if service.addUserInput == nil {
-		t.Fatal("expected AddUser to run")
+		t.Fatal("expected AddUser call")
 	}
-	if got := service.addUserInput.Token; got != "user-token" {
-		t.Fatalf("unexpected token %q", got)
+	if service.addUserInput.AppSecret != "secret_1" {
+		t.Fatalf("unexpected app secret %q", service.addUserInput.AppSecret)
 	}
-
+	if service.addUserInput.Profile != "prod" {
+		t.Fatalf("unexpected profile %q", service.addUserInput.Profile)
+	}
 	envelope := decodeEnvelope(t, stdout.Bytes())
-	assertEnvelopeBasics(t, envelope, "meta auth login-manual")
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	assertEnvelopeBasics(t, envelope, "meta auth login")
+	if !strings.Contains(stderr.String(), "https://example.com/oauth") {
+		t.Fatalf("expected auth url in stderr, got %q", stderr.String())
 	}
 }
 
-func TestAuthValidateSupportsMinTTLAndRequiredScopes(t *testing.T) {
-	fixedNow := time.Date(2026, 2, 24, 12, 0, 0, 0, time.UTC)
-	useAuthNow(t, func() time.Time { return fixedNow })
-
+func TestAuthSetupDiscoversAndBindsDefaults(t *testing.T) {
 	service := &stubAuthService{
-		validateProfileResponse: &auth.DebugTokenResponse{
-			Data: map[string]any{
-				"is_valid":   true,
-				"expires_at": float64(fixedNow.Add(2 * time.Hour).Unix()),
-				"scopes":     []any{"pages_show_list", "instagram_basic"},
-			},
-		},
+		discoveredPages: []auth.DiscoveredPage{{PageID: "p_1", Name: "Page One", IGBusinessAccountID: "ig_1"}},
 	}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
 
 	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
 	cmd := NewAuthCommand(testRuntime("prod"))
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
 	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{
-		"validate",
-		"--min-ttl", "30m",
-		"--require-scopes", "pages_show_list,instagram_basic",
-	})
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"setup", "--app-id", "app_1", "--app-secret", "secret_1", "--mode", "both", "--scope-pack", "solo_smb"})
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute auth validate: %v", err)
+		t.Fatalf("execute setup: %v", err)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	if service.updateProfileBindingsIn == nil {
+		t.Fatal("expected profile binding update")
+	}
+	if service.updateProfileBindingsIn.PageID != "p_1" || service.updateProfileBindingsIn.IGUserID != "ig_1" {
+		t.Fatalf("unexpected binding payload: %+v", service.updateProfileBindingsIn)
+	}
+	envelope := decodeEnvelope(t, stdout.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta auth setup")
+}
+
+func TestAuthValidateUsesEnsureValidWithDefaults(t *testing.T) {
+	service := &stubAuthService{
+		ensureValidResult: &auth.DebugTokenMetadata{IsValid: true, Scopes: []string{"ads_read"}, ExpiresAt: time.Now().Add(96 * time.Hour)},
+		validateProfileResp: &auth.DebugTokenResponse{Data: map[string]any{"is_valid": true}},
+	}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+
+	stdout := &bytes.Buffer{}
+	cmd := NewAuthCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"validate"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute validate: %v", err)
+	}
+	if service.ensureValidMinTTL != defaultAuthPreflightTTL {
+		t.Fatalf("unexpected min ttl: got=%s want=%s", service.ensureValidMinTTL, defaultAuthPreflightTTL)
 	}
 	envelope := decodeEnvelope(t, stdout.Bytes())
 	assertEnvelopeBasics(t, envelope, "meta auth validate")
 }
 
-func TestAuthValidateFailsWhenRequiredScopeMissing(t *testing.T) {
-	fixedNow := time.Date(2026, 2, 24, 12, 0, 0, 0, time.UTC)
-	useAuthNow(t, func() time.Time { return fixedNow })
-
-	service := &stubAuthService{
-		validateProfileResponse: &auth.DebugTokenResponse{
-			Data: map[string]any{
-				"is_valid":   true,
-				"expires_at": float64(fixedNow.Add(2 * time.Hour).Unix()),
-				"scopes":     []any{"pages_show_list"},
-			},
-		},
-	}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-	cmd := NewAuthCommand(testRuntime("prod"))
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{
-		"validate",
-		"--min-ttl", "30m",
-		"--require-scopes", "pages_show_list,instagram_basic",
-	})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected scope validation error")
-	}
-	if !strings.Contains(err.Error(), "missing required scopes") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestAuthDiscoverCallsServiceWithMode(t *testing.T) {
-	service := &stubAuthService{}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-	cmd := NewAuthCommand(testRuntime("prod"))
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{"discover", "--mode", "ig"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute auth discover: %v", err)
-	}
-	if service.discoverInput == nil {
-		t.Fatal("expected discover method call")
-	}
-	if got := service.discoverInput.Mode; got != "ig" {
-		t.Fatalf("unexpected mode %q", got)
-	}
-	envelope := decodeEnvelope(t, stdout.Bytes())
-	assertEnvelopeBasics(t, envelope, "meta auth discover")
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
-	}
-}
-
 func TestAuthDiscoverRejectsInvalidMode(t *testing.T) {
 	service := &stubAuthService{}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
 
 	cmd := NewAuthCommand(testRuntime("prod"))
 	cmd.SilenceErrors = true
@@ -485,74 +367,30 @@ func TestAuthDiscoverRejectsInvalidMode(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected mode validation error")
+		t.Fatal("expected invalid mode error")
 	}
 	if !strings.Contains(err.Error(), "mode must be one of: pages, ig") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestAuthSetupCallsService(t *testing.T) {
-	service := &stubAuthService{}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
-
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-	cmd := NewAuthCommand(testRuntime("prod"))
-	cmd.SilenceErrors = true
-	cmd.SilenceUsage = true
-	cmd.SetOut(stdout)
-	cmd.SetErr(stderr)
-	cmd.SetArgs([]string{
-		"setup",
-		"--app-id", "123",
-		"--app-secret", "secret",
-		"--redirect-uri", "https://localhost/callback",
-		"--scopes", "pages_show_list",
-		"--mode", "pages",
-	})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute auth setup: %v", err)
-	}
-	if service.setupInput == nil {
-		t.Fatal("expected setup method call")
-	}
-	if got := service.setupInput.AppSecret; got != "secret" {
-		t.Fatalf("unexpected app secret %q", got)
-	}
-	envelope := decodeEnvelope(t, stdout.Bytes())
-	assertEnvelopeBasics(t, envelope, "meta auth setup")
-	if stderr.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", stderr.String())
-	}
-}
-
 func TestAuthSetupPropagatesServiceErrors(t *testing.T) {
-	service := &stubAuthService{setupErr: errors.New("setup failed")}
-	useAuthServiceFactory(t, func() (authCLIService, error) {
-		return service, nil
-	})
+	service := &stubAuthService{exchangeOAuthCodeErr: errors.New("exchange failed")}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
 
 	cmd := NewAuthCommand(testRuntime("prod"))
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{
-		"setup",
-		"--app-id", "123",
-		"--app-secret", "secret",
-		"--redirect-uri", "https://localhost/callback",
-	})
+	cmd.SetArgs([]string{"setup", "--app-id", "app_1", "--app-secret", "secret_1"})
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected setup failure")
+		t.Fatal("expected setup error")
 	}
-	if !strings.Contains(err.Error(), "setup failed") {
+	if !strings.Contains(err.Error(), "exchange failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/config"
@@ -599,20 +598,7 @@ func resolveIGUserID(flagValue string, profile config.Profile) string {
 }
 
 func readProfileIGUserID(profile config.Profile) string {
-	profileValue := reflect.ValueOf(profile)
-	if !profileValue.IsValid() {
-		return ""
-	}
-	for _, fieldName := range []string{"IGUserID", "IgUserID"} {
-		field := profileValue.FieldByName(fieldName)
-		if !field.IsValid() || field.Kind() != reflect.String {
-			continue
-		}
-		if value := strings.TrimSpace(field.String()); value != "" {
-			return value
-		}
-	}
-	return ""
+	return strings.TrimSpace(profile.IGUserID)
 }
 
 func resolveIGScheduleStatePath(path string) (string, error) {

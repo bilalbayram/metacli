@@ -21,6 +21,15 @@ const (
 	TokenTypePage       = "page"
 	TokenTypeApp        = "app"
 
+	AuthProviderFacebookLogin = "facebook_login"
+	AuthProviderInstagram     = "instagram_login"
+	AuthProviderSystemUser    = "system_user"
+	AuthProviderApp           = "app"
+
+	AuthModeBoth      = "both"
+	AuthModeFacebook  = "facebook"
+	AuthModeInstagram = "instagram"
+
 	DefaultGraphBaseURL = "https://graph.facebook.com"
 )
 
@@ -41,12 +50,23 @@ type AddSystemUserInput struct {
 	AppID      string
 	Token      string
 	AppSecret  string
+	AuthMode   string
+	Scopes     []string
 }
 
 type AddUserInput struct {
-	Profile string
-	AppID   string
-	Token   string
+	Profile         string
+	AppID           string
+	Token           string
+	AppSecret       string
+	AuthProvider    string
+	AuthMode        string
+	Scopes          []string
+	IssuedAt        string
+	ExpiresAt       string
+	LastValidatedAt string
+	IGUserID        string
+	PageID          string
 }
 
 type PageTokenInput struct {
@@ -59,6 +79,14 @@ type SetAppTokenInput struct {
 	Profile   string
 	AppID     string
 	AppSecret string
+	AuthMode  string
+	Scopes    []string
+}
+
+type UpdateProfileBindingsInput struct {
+	Profile  string
+	PageID   string
+	IGUserID string
 }
 
 type ExchangeCodeInput struct {
@@ -101,6 +129,9 @@ func (s *Service) AddSystemUser(ctx context.Context, input AddSystemUserInput) e
 	if strings.TrimSpace(input.Token) == "" {
 		return errors.New("token is required")
 	}
+	if strings.TrimSpace(input.AppSecret) == "" {
+		return errors.New("app secret is required")
+	}
 
 	cfg, err := config.LoadOrCreate(s.configPath)
 	if err != nil {
@@ -115,25 +146,32 @@ func (s *Service) AddSystemUser(ctx context.Context, input AddSystemUserInput) e
 		return err
 	}
 
-	appSecretRef := ""
-	if strings.TrimSpace(input.AppSecret) != "" {
-		appSecretRef, err = SecretRef(input.Profile, SecretAppSecret)
-		if err != nil {
-			return err
-		}
-		if err := s.secrets.Set(appSecretRef, input.AppSecret); err != nil {
-			return err
-		}
+	appSecretRef, err := SecretRef(input.Profile, SecretAppSecret)
+	if err != nil {
+		return err
+	}
+	if err := s.secrets.Set(appSecretRef, input.AppSecret); err != nil {
+		return err
 	}
 
+	now := time.Now().UTC()
+	scopes := normalizedScopesOrDefault(input.Scopes, []string{"ads_management", "business_management"})
+	authMode := normalizedAuthModeOrDefault(input.AuthMode, AuthModeBoth)
+
 	if err := cfg.UpsertProfile(input.Profile, config.Profile{
-		Domain:       config.DefaultDomain,
-		GraphVersion: config.DefaultGraphVersion,
-		TokenType:    TokenTypeSystemUser,
-		BusinessID:   input.BusinessID,
-		AppID:        input.AppID,
-		TokenRef:     tokenRef,
-		AppSecretRef: appSecretRef,
+		Domain:          config.DefaultDomain,
+		GraphVersion:    config.DefaultGraphVersion,
+		TokenType:       TokenTypeSystemUser,
+		BusinessID:      input.BusinessID,
+		AppID:           input.AppID,
+		TokenRef:        tokenRef,
+		AppSecretRef:    appSecretRef,
+		AuthProvider:    AuthProviderSystemUser,
+		AuthMode:        authMode,
+		Scopes:          scopes,
+		IssuedAt:        now.Format(time.RFC3339),
+		ExpiresAt:       now.AddDate(10, 0, 0).Format(time.RFC3339),
+		LastValidatedAt: now.Format(time.RFC3339),
 	}); err != nil {
 		return err
 	}
@@ -151,6 +189,9 @@ func (s *Service) AddUser(ctx context.Context, input AddUserInput) error {
 	if strings.TrimSpace(input.Token) == "" {
 		return errors.New("token is required")
 	}
+	if strings.TrimSpace(input.AppSecret) == "" {
+		return errors.New("app secret is required")
+	}
 
 	cfg, err := config.LoadOrCreate(s.configPath)
 	if err != nil {
@@ -164,13 +205,43 @@ func (s *Service) AddUser(ctx context.Context, input AddUserInput) error {
 	if err := s.secrets.Set(tokenRef, input.Token); err != nil {
 		return err
 	}
+	appSecretRef, err := SecretRef(input.Profile, SecretAppSecret)
+	if err != nil {
+		return err
+	}
+	if err := s.secrets.Set(appSecretRef, input.AppSecret); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	issuedAt := strings.TrimSpace(input.IssuedAt)
+	if issuedAt == "" {
+		issuedAt = now.Format(time.RFC3339)
+	}
+	expiresAt := strings.TrimSpace(input.ExpiresAt)
+	if expiresAt == "" {
+		expiresAt = now.AddDate(0, 0, 60).Format(time.RFC3339)
+	}
+	lastValidatedAt := strings.TrimSpace(input.LastValidatedAt)
+	if lastValidatedAt == "" {
+		lastValidatedAt = now.Format(time.RFC3339)
+	}
 
 	if err := cfg.UpsertProfile(input.Profile, config.Profile{
-		Domain:       config.DefaultDomain,
-		GraphVersion: config.DefaultGraphVersion,
-		TokenType:    TokenTypeUser,
-		AppID:        input.AppID,
-		TokenRef:     tokenRef,
+		Domain:          config.DefaultDomain,
+		GraphVersion:    config.DefaultGraphVersion,
+		TokenType:       TokenTypeUser,
+		AppID:           input.AppID,
+		PageID:          strings.TrimSpace(input.PageID),
+		TokenRef:        tokenRef,
+		AppSecretRef:    appSecretRef,
+		AuthProvider:    normalizedAuthProviderOrDefault(input.AuthProvider, AuthProviderFacebookLogin),
+		AuthMode:        normalizedAuthModeOrDefault(input.AuthMode, AuthModeBoth),
+		Scopes:          normalizedScopesOrDefault(input.Scopes, []string{"ads_read"}),
+		IssuedAt:        issuedAt,
+		ExpiresAt:       expiresAt,
+		LastValidatedAt: lastValidatedAt,
+		IGUserID:        strings.TrimSpace(input.IGUserID),
 	}); err != nil {
 		return err
 	}
@@ -215,13 +286,21 @@ func (s *Service) SetAppToken(ctx context.Context, input SetAppTokenInput) error
 		return err
 	}
 
+	now := time.Now().UTC()
+
 	if err := cfg.UpsertProfile(input.Profile, config.Profile{
-		Domain:       config.DefaultDomain,
-		GraphVersion: config.DefaultGraphVersion,
-		TokenType:    TokenTypeApp,
-		AppID:        input.AppID,
-		TokenRef:     tokenRef,
-		AppSecretRef: appSecretRef,
+		Domain:          config.DefaultDomain,
+		GraphVersion:    config.DefaultGraphVersion,
+		TokenType:       TokenTypeApp,
+		AppID:           input.AppID,
+		TokenRef:        tokenRef,
+		AppSecretRef:    appSecretRef,
+		AuthProvider:    AuthProviderApp,
+		AuthMode:        normalizedAuthModeOrDefault(input.AuthMode, AuthModeBoth),
+		Scopes:          normalizedScopesOrDefault(input.Scopes, []string{"ads_management"}),
+		IssuedAt:        now.Format(time.RFC3339),
+		ExpiresAt:       now.AddDate(10, 0, 0).Format(time.RFC3339),
+		LastValidatedAt: now.Format(time.RFC3339),
 	}); err != nil {
 		return err
 	}
@@ -252,6 +331,16 @@ func (s *Service) DerivePageToken(ctx context.Context, input PageTokenInput) err
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(sourceProfile.AppID) == "" {
+		return errors.New("source profile app_id is required for page token derivation")
+	}
+	if strings.TrimSpace(sourceProfile.AppSecretRef) == "" {
+		return errors.New("source profile app_secret_ref is required for page token derivation")
+	}
+	sourceAppSecret, err := s.secrets.Get(sourceProfile.AppSecretRef)
+	if err != nil {
+		return err
+	}
 
 	token, err := s.fetchPageToken(ctx, sourceProfile.GraphVersion, input.PageID, sourceToken)
 	if err != nil {
@@ -265,14 +354,47 @@ func (s *Service) DerivePageToken(ctx context.Context, input PageTokenInput) err
 	if err := s.secrets.Set(tokenRef, token); err != nil {
 		return err
 	}
+	appSecretRef, err := SecretRef(input.Profile, SecretAppSecret)
+	if err != nil {
+		return err
+	}
+	if err := s.secrets.Set(appSecretRef, sourceAppSecret); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	issuedAt := strings.TrimSpace(sourceProfile.IssuedAt)
+	if issuedAt == "" {
+		issuedAt = now.Format(time.RFC3339)
+	}
+	expiresAt := strings.TrimSpace(sourceProfile.ExpiresAt)
+	if expiresAt == "" {
+		expiresAt = now.AddDate(0, 0, 60).Format(time.RFC3339)
+	}
+	lastValidatedAt := now.Format(time.RFC3339)
+	scopes := normalizedScopesOrDefault(sourceProfile.Scopes, []string{"pages_read_engagement"})
+	if !containsScope(scopes, "pages_read_engagement") {
+		scopes = append(scopes, "pages_read_engagement")
+	}
+	authProvider := normalizedAuthProviderOrDefault(sourceProfile.AuthProvider, AuthProviderFacebookLogin)
+	authMode := normalizedAuthModeOrDefault(sourceProfile.AuthMode, AuthModeFacebook)
 
 	if err := cfg.UpsertProfile(input.Profile, config.Profile{
-		Domain:        config.DefaultDomain,
-		GraphVersion:  sourceProfile.GraphVersion,
-		TokenType:     TokenTypePage,
-		PageID:        input.PageID,
-		SourceProfile: sourceName,
-		TokenRef:      tokenRef,
+		Domain:          config.DefaultDomain,
+		GraphVersion:    sourceProfile.GraphVersion,
+		TokenType:       TokenTypePage,
+		AppID:           sourceProfile.AppID,
+		PageID:          input.PageID,
+		SourceProfile:   sourceName,
+		TokenRef:        tokenRef,
+		AppSecretRef:    appSecretRef,
+		AuthProvider:    authProvider,
+		AuthMode:        authMode,
+		Scopes:          scopes,
+		IssuedAt:        issuedAt,
+		ExpiresAt:       expiresAt,
+		LastValidatedAt: lastValidatedAt,
+		IGUserID:        sourceProfile.IGUserID,
 	}); err != nil {
 		return err
 	}
@@ -290,9 +412,6 @@ func (s *Service) ExchangeOAuthCode(ctx context.Context, input ExchangeCodeInput
 	if strings.TrimSpace(input.Code) == "" {
 		return "", errors.New("authorization code is required")
 	}
-	if strings.TrimSpace(input.CodeVerifier) == "" {
-		return "", errors.New("pkce code verifier is required")
-	}
 	version := input.Version
 	if version == "" {
 		version = config.DefaultGraphVersion
@@ -302,7 +421,9 @@ func (s *Service) ExchangeOAuthCode(ctx context.Context, input ExchangeCodeInput
 	body.Set("client_id", input.AppID)
 	body.Set("redirect_uri", input.RedirectURI)
 	body.Set("code", input.Code)
-	body.Set("code_verifier", input.CodeVerifier)
+	if strings.TrimSpace(input.CodeVerifier) != "" {
+		body.Set("code_verifier", input.CodeVerifier)
+	}
 
 	response := map[string]any{}
 	if err := s.doFormRequest(ctx, version, "oauth/access_token", body, "", "", &response); err != nil {
@@ -420,6 +541,92 @@ func (s *Service) ListProfiles() (map[string]config.Profile, error) {
 		clone[name] = profile
 	}
 	return clone, nil
+}
+
+func (s *Service) UpdateProfileBindings(ctx context.Context, input UpdateProfileBindingsInput) error {
+	_ = ctx
+	profileName := strings.TrimSpace(input.Profile)
+	if profileName == "" {
+		return errors.New("profile is required")
+	}
+
+	cfg, err := config.Load(s.configPath)
+	if err != nil {
+		return err
+	}
+	name, profile, err := cfg.ResolveProfile(profileName)
+	if err != nil {
+		return err
+	}
+
+	pageID := strings.TrimSpace(input.PageID)
+	if pageID != "" {
+		profile.PageID = pageID
+	}
+	igUserID := strings.TrimSpace(input.IGUserID)
+	if igUserID != "" {
+		profile.IGUserID = igUserID
+	}
+	profile.LastValidatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	if err := cfg.UpsertProfile(name, profile); err != nil {
+		return err
+	}
+	return config.Save(s.configPath, cfg)
+}
+
+func normalizedScopesOrDefault(scopes []string, fallback []string) []string {
+	out := make([]string, 0, len(scopes))
+	seen := map[string]struct{}{}
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		if _, exists := seen[scope]; exists {
+			continue
+		}
+		seen[scope] = struct{}{}
+		out = append(out, scope)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	fallbackOut := make([]string, 0, len(fallback))
+	for _, scope := range fallback {
+		scope = strings.TrimSpace(scope)
+		if scope != "" {
+			fallbackOut = append(fallbackOut, scope)
+		}
+	}
+	return fallbackOut
+}
+
+func containsScope(scopes []string, scope string) bool {
+	for _, current := range scopes {
+		if current == scope {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedAuthProviderOrDefault(provider string, fallback string) string {
+	switch strings.TrimSpace(provider) {
+	case AuthProviderFacebookLogin, AuthProviderInstagram, AuthProviderSystemUser, AuthProviderApp:
+		return strings.TrimSpace(provider)
+	default:
+		return fallback
+	}
+}
+
+func normalizedAuthModeOrDefault(mode string, fallback string) string {
+	switch strings.TrimSpace(mode) {
+	case AuthModeBoth, AuthModeFacebook, AuthModeInstagram:
+		return strings.TrimSpace(mode)
+	default:
+		return fallback
+	}
 }
 
 func (s *Service) fetchAppToken(ctx context.Context, version string, appID string, appSecret string) (string, error) {

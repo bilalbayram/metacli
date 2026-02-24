@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"strconv"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,26 +14,70 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	defaultAuthListenAddr   = "127.0.0.1:53682"
+	defaultAuthCallbackPath = "/oauth/callback"
+	defaultAuthTimeout      = 180 * time.Second
+	defaultAuthPreflightTTL = 72 * time.Hour
+)
+
 type authCLIService interface {
 	AddSystemUser(context.Context, auth.AddSystemUserInput) error
 	AddUser(context.Context, auth.AddUserInput) error
 	DerivePageToken(context.Context, auth.PageTokenInput) error
 	SetAppToken(context.Context, auth.SetAppTokenInput) error
 	ExchangeOAuthCode(context.Context, auth.ExchangeCodeInput) (string, error)
+	ExchangeLongLivedUserToken(context.Context, auth.ExchangeLongLivedUserTokenInput) (auth.LongLivedToken, error)
+	EnsureValid(context.Context, string, time.Duration, []string) (*auth.DebugTokenMetadata, error)
 	ValidateProfile(context.Context, string) (*auth.DebugTokenResponse, error)
 	RotateProfile(context.Context, string) error
 	DebugToken(context.Context, string, string, string) (*auth.DebugTokenResponse, error)
 	ListProfiles() (map[string]config.Profile, error)
+	DiscoverPagesAndIGBusinessAccounts(context.Context, string) ([]auth.DiscoveredPage, error)
+	UpdateProfileBindings(context.Context, auth.UpdateProfileBindingsInput) error
 }
 
-var (
-	newAuthCLIService = newAuthService
-	authNow           = time.Now
+var newAuthCLIService = newAuthService
+var newAuthPKCE = auth.NewPKCE
+var newAuthOAuthState = auth.NewOAuthState
+var newAuthOAuthListener = func(redirectURI string, state string) (oauthCodeListener, error) {
+	return auth.NewOAuthCallbackListener(redirectURI, state)
+}
+var buildAuthOAuthURLWithState = auth.BuildOAuthURLWithState
+var openAuthBrowser = auth.OpenBrowser
 
-	contextType  = reflect.TypeOf((*context.Context)(nil)).Elem()
-	errorType    = reflect.TypeOf((*error)(nil)).Elem()
-	durationType = reflect.TypeOf(time.Duration(0))
-)
+type oauthCodeListener interface {
+	RedirectURI() string
+	Wait(context.Context, time.Duration) (string, error)
+	Close(context.Context) error
+}
+
+type oauthLoginInput struct {
+	Profile      string
+	AppID        string
+	AppSecret    string
+	Scopes       []string
+	ListenAddr   string
+	Timeout      time.Duration
+	OpenBrowser  bool
+	Version      string
+	AuthProvider string
+	AuthMode     string
+	PageID       string
+	IGUserID     string
+}
+
+type oauthLoginResult struct {
+	AuthURL       string
+	RedirectURI   string
+	ExpiresAt     time.Time
+	Scopes        []string
+	TokenType     string
+	AuthProvider  string
+	AuthMode      string
+	Profile       string
+	TokenIssuedAt time.Time
+}
 
 func NewAuthCommand(runtime Runtime) *cobra.Command {
 	authCmd := &cobra.Command{
@@ -74,11 +117,9 @@ func newAuthAddCommand(runtime Runtime) *cobra.Command {
 		Use:   "system-user",
 		Short: "Add a system-user profile",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
-			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
 
 			svc, err := newAuthCLIService()
@@ -86,17 +127,19 @@ func newAuthAddCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 			if err := svc.AddSystemUser(cmd.Context(), auth.AddSystemUserInput{
-				Profile:    profile,
+				Profile:    resolvedProfile,
 				BusinessID: businessID,
 				AppID:      appID,
 				Token:      token,
 				AppSecret:  appSecret,
+				AuthMode:   auth.AuthModeBoth,
+				Scopes:     []string{"ads_management", "business_management"},
 			}); err != nil {
 				return err
 			}
 			return writeSuccess(cmd, runtime, "meta auth add system-user", map[string]any{
 				"status":  "ok",
-				"profile": profile,
+				"profile": resolvedProfile,
 			}, nil, nil)
 		},
 	}
@@ -115,27 +158,32 @@ func newAuthAddCommand(runtime Runtime) *cobra.Command {
 
 func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile     string
-		appID       string
-		appSecret   string
-		redirectURI string
-		scopes      string
-		mode        string
-		pageID      string
-		igUserID    string
+		profile        string
+		appID          string
+		appSecret      string
+		mode           string
+		scopePack      string
+		listenAddr     string
+		timeout        time.Duration
+		openBrowser    bool
+		pageID         string
+		igUserID       string
+		nonInteractive bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Automate auth setup and profile binding",
+		Short: "Guided auth setup with automated browser callback",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			resolvedMode, err := normalizeAuthMode(mode)
+			if err != nil {
+				return err
 			}
-			resolvedMode, err := normalizeAuthDiscoverMode(mode)
+			scopes, err := scopePackScopes(scopePack, resolvedMode)
 			if err != nil {
 				return err
 			}
@@ -145,42 +193,82 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 
-			result, used, err := callAuthOptionalAutomationMethod(cmd.Context(), svc, []string{"Setup", "SetupAutomation"}, map[string]any{
-				"profile":      profile,
-				"app_id":       appID,
-				"app_secret":   appSecret,
-				"redirect_uri": redirectURI,
-				"scopes":       csvToSlice(scopes),
-				"mode":         resolvedMode,
-				"page_id":      pageID,
-				"ig_user_id":   igUserID,
-				"version":      config.DefaultGraphVersion,
+			loginResult, err := runOAuthAutoLogin(cmd, svc, oauthLoginInput{
+				Profile:      resolvedProfile,
+				AppID:        appID,
+				AppSecret:    appSecret,
+				Scopes:       scopes,
+				ListenAddr:   listenAddr,
+				Timeout:      timeout,
+				OpenBrowser:  openBrowser,
+				Version:      config.DefaultGraphVersion,
+				AuthProvider: authProviderFromMode(resolvedMode),
+				AuthMode:     resolvedMode,
+				PageID:       pageID,
+				IGUserID:     igUserID,
 			})
 			if err != nil {
 				return err
 			}
-			if !used {
-				return errors.New("auth setup requires updated auth service API (TODO: implement Setup)")
+
+			pages, err := svc.DiscoverPagesAndIGBusinessAccounts(cmd.Context(), resolvedProfile)
+			if err != nil {
+				return err
 			}
 
-			return writeSuccess(cmd, runtime, "meta auth setup", mergeAuthCommandData(map[string]any{
-				"status":  "ok",
-				"profile": profile,
-				"mode":    resolvedMode,
-			}, result), nil, nil)
+			selectedPageID := strings.TrimSpace(pageID)
+			if selectedPageID == "" {
+				if firstPage, ok := firstDiscoveredPageID(pages); ok {
+					selectedPageID = firstPage
+				}
+			}
+			selectedIGUserID := strings.TrimSpace(igUserID)
+			if selectedIGUserID == "" {
+				if firstIG, ok := firstDiscoveredIGUserID(pages); ok {
+					selectedIGUserID = firstIG
+				}
+			}
+
+			if selectedPageID != "" || selectedIGUserID != "" {
+				if err := svc.UpdateProfileBindings(cmd.Context(), auth.UpdateProfileBindingsInput{
+					Profile:  resolvedProfile,
+					PageID:   selectedPageID,
+					IGUserID: selectedIGUserID,
+				}); err != nil {
+					return err
+				}
+			}
+
+			return writeSuccess(cmd, runtime, "meta auth setup", map[string]any{
+				"status":           "ok",
+				"profile":          resolvedProfile,
+				"mode":             resolvedMode,
+				"scope_pack":       scopePack,
+				"scopes":           scopes,
+				"auth_url":         loginResult.AuthURL,
+				"redirect_uri":     loginResult.RedirectURI,
+				"token_expires_at": loginResult.ExpiresAt.Format(time.RFC3339),
+				"pages":            pages,
+				"selected_page_id": selectedPageID,
+				"selected_ig_user": selectedIGUserID,
+				"non_interactive":  nonInteractive,
+			}, nil, nil)
 		},
 	}
+
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&appID, "app-id", "", "Meta App ID")
 	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret")
-	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI")
-	cmd.Flags().StringVar(&scopes, "scopes", "", "Comma-separated OAuth scopes")
-	cmd.Flags().StringVar(&mode, "mode", "pages", "Discovery mode: pages|ig")
-	cmd.Flags().StringVar(&pageID, "page-id", "", "Optional page id override")
-	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Optional Instagram user id override")
+	cmd.Flags().StringVar(&mode, "mode", auth.AuthModeBoth, "Auth mode: both|facebook|instagram")
+	cmd.Flags().StringVar(&scopePack, "scope-pack", "solo_smb", "Scope pack: solo_smb|ads_only|ig_publish")
+	cmd.Flags().StringVar(&listenAddr, "listen", defaultAuthListenAddr, "OAuth callback listener host:port")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")
+	cmd.Flags().BoolVar(&openBrowser, "open-browser", true, "Open browser automatically")
+	cmd.Flags().StringVar(&pageID, "page-id", "", "Optional page id binding")
+	cmd.Flags().StringVar(&igUserID, "ig-user-id", "", "Optional Instagram user id binding")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Run without interactive prompts")
 	mustMarkFlagRequired(cmd, "app-id")
 	mustMarkFlagRequired(cmd, "app-secret")
-	mustMarkFlagRequired(cmd, "redirect-uri")
 	return cmd
 }
 
@@ -189,55 +277,65 @@ func newAuthLoginCommand(runtime Runtime) *cobra.Command {
 		profile     string
 		appID       string
 		appSecret   string
-		redirectURI string
-		scopes      string
+		scopesRaw   string
+		listenAddr  string
+		timeout     time.Duration
+		openBrowser bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate a user via automated OAuth callback flow",
+		Short: "Authenticate a user with browser callback OAuth flow",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			scopes := csvToSlice(scopesRaw)
+			if len(scopes) == 0 {
+				return errors.New("scopes are required")
 			}
-
 			svc, err := newAuthCLIService()
 			if err != nil {
 				return err
 			}
 
-			result, used, err := callAuthOptionalAutomationMethod(cmd.Context(), svc, []string{"LoginAutoCallback", "LoginAuto", "Login"}, map[string]any{
-				"profile":      profile,
-				"app_id":       appID,
-				"app_secret":   appSecret,
-				"redirect_uri": redirectURI,
-				"scopes":       csvToSlice(scopes),
-				"version":      config.DefaultGraphVersion,
+			result, err := runOAuthAutoLogin(cmd, svc, oauthLoginInput{
+				Profile:      resolvedProfile,
+				AppID:        appID,
+				AppSecret:    appSecret,
+				Scopes:       scopes,
+				ListenAddr:   listenAddr,
+				Timeout:      timeout,
+				OpenBrowser:  openBrowser,
+				Version:      config.DefaultGraphVersion,
+				AuthProvider: auth.AuthProviderFacebookLogin,
+				AuthMode:     auth.AuthModeBoth,
 			})
 			if err != nil {
 				return err
 			}
-			if !used {
-				return errors.New("auth login requires updated auth service API (TODO: implement auto callback login)")
-			}
 
-			return writeSuccess(cmd, runtime, "meta auth login", mergeAuthCommandData(map[string]any{
-				"status":  "ok",
-				"profile": profile,
-			}, result), nil, nil)
+			return writeSuccess(cmd, runtime, "meta auth login", map[string]any{
+				"status":           "ok",
+				"profile":          resolvedProfile,
+				"auth_url":         result.AuthURL,
+				"redirect_uri":     result.RedirectURI,
+				"scopes":           result.Scopes,
+				"token_expires_at": result.ExpiresAt.Format(time.RFC3339),
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&appID, "app-id", "", "Meta App ID")
 	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret")
-	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI")
-	cmd.Flags().StringVar(&scopes, "scopes", "", "Comma-separated OAuth scopes")
+	cmd.Flags().StringVar(&scopesRaw, "scopes", "", "Comma-separated OAuth scopes")
+	cmd.Flags().StringVar(&listenAddr, "listen", defaultAuthListenAddr, "OAuth callback listener host:port")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")
+	cmd.Flags().BoolVar(&openBrowser, "open-browser", true, "Open browser automatically")
 	mustMarkFlagRequired(cmd, "app-id")
 	mustMarkFlagRequired(cmd, "app-secret")
-	mustMarkFlagRequired(cmd, "redirect-uri")
+	mustMarkFlagRequired(cmd, "scopes")
 	return cmd
 }
 
@@ -247,19 +345,21 @@ func newAuthLoginManualCommand(runtime Runtime) *cobra.Command {
 		appID       string
 		appSecret   string
 		redirectURI string
-		scopes      string
+		scopesRaw   string
 		code        string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "login-manual",
-		Short: "Authenticate a user by pasting an OAuth authorization code",
+		Short: "Authenticate with explicit authorization code",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			scopes := csvToSlice(scopesRaw)
+			if len(scopes) == 0 {
+				return errors.New("scopes are required")
 			}
 
 			svc, err := newAuthCLIService()
@@ -267,81 +367,80 @@ func newAuthLoginManualCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 
-			result, used, err := callAuthOptionalAutomationMethod(cmd.Context(), svc, []string{"LoginManual", "LoginWithCode"}, map[string]any{
-				"profile":      profile,
-				"app_id":       appID,
-				"app_secret":   appSecret,
-				"redirect_uri": redirectURI,
-				"scopes":       csvToSlice(scopes),
-				"code":         code,
-				"version":      config.DefaultGraphVersion,
+			shortToken, err := svc.ExchangeOAuthCode(cmd.Context(), auth.ExchangeCodeInput{
+				AppID:       appID,
+				RedirectURI: redirectURI,
+				Code:        code,
+				Version:     config.DefaultGraphVersion,
 			})
 			if err != nil {
 				return err
 			}
-			if used {
-				return writeSuccess(cmd, runtime, "meta auth login-manual", mergeAuthCommandData(map[string]any{
-					"status":  "ok",
-					"profile": profile,
-				}, result), nil, nil)
-			}
 
-			verifier, challenge, err := auth.NewPKCE()
-			if err != nil {
-				return err
-			}
-			scopeList := csvToSlice(scopes)
-			authURL, err := auth.BuildOAuthURL(appID, redirectURI, scopeList, challenge, config.DefaultGraphVersion)
-			if err != nil {
-				return err
-			}
-			if code == "" {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Open this URL in your browser and complete login:\n%s\nAuthorization code: ", authURL)
-				reader := bufio.NewReader(cmd.InOrStdin())
-				line, readErr := reader.ReadString('\n')
-				if readErr != nil {
-					return fmt.Errorf("read authorization code from stdin: %w", readErr)
-				}
-				code = strings.TrimSpace(line)
-			}
-			if code == "" {
-				return errors.New("authorization code is required")
-			}
-
-			token, err := svc.ExchangeOAuthCode(context.Background(), auth.ExchangeCodeInput{
-				AppID:        appID,
-				RedirectURI:  redirectURI,
-				Code:         code,
-				CodeVerifier: verifier,
-				Version:      config.DefaultGraphVersion,
+			longLived, err := svc.ExchangeLongLivedUserToken(cmd.Context(), auth.ExchangeLongLivedUserTokenInput{
+				AppID:           appID,
+				AppSecret:       appSecret,
+				ShortLivedToken: shortToken,
+				Version:         config.DefaultGraphVersion,
 			})
 			if err != nil {
 				return err
+			}
+
+			debugResp, err := svc.DebugToken(cmd.Context(), config.DefaultGraphVersion, longLived.AccessToken, fmt.Sprintf("%s|%s", appID, appSecret))
+			if err != nil {
+				return err
+			}
+			metadata, err := auth.NormalizeDebugTokenMetadata(debugResp)
+			if err != nil {
+				return err
+			}
+			if !metadata.IsValid {
+				return errors.New("profile token is invalid")
+			}
+
+			now := time.Now().UTC()
+			expiresAt := metadata.ExpiresAt
+			if expiresAt.IsZero() {
+				expiresAt = now.Add(60 * 24 * time.Hour)
 			}
 
 			if err := svc.AddUser(cmd.Context(), auth.AddUserInput{
-				Profile: profile,
-				AppID:   appID,
-				Token:   token,
+				Profile:         resolvedProfile,
+				AppID:           appID,
+				Token:           longLived.AccessToken,
+				AppSecret:       appSecret,
+				AuthProvider:    auth.AuthProviderFacebookLogin,
+				AuthMode:        auth.AuthModeBoth,
+				Scopes:          metadata.Scopes,
+				IssuedAt:        now.Format(time.RFC3339),
+				ExpiresAt:       expiresAt.Format(time.RFC3339),
+				LastValidatedAt: now.Format(time.RFC3339),
 			}); err != nil {
 				return err
 			}
 
 			return writeSuccess(cmd, runtime, "meta auth login-manual", map[string]any{
-				"status":   "ok",
-				"profile":  profile,
-				"auth_url": authURL,
+				"status":           "ok",
+				"profile":          resolvedProfile,
+				"redirect_uri":     redirectURI,
+				"scopes":           metadata.Scopes,
+				"token_expires_at": expiresAt.Format(time.RFC3339),
 			}, nil, nil)
 		},
 	}
+
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&appID, "app-id", "", "Meta App ID")
-	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret (optional for PKCE fallback)")
+	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret")
 	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI")
-	cmd.Flags().StringVar(&scopes, "scopes", "", "Comma-separated OAuth scopes")
-	cmd.Flags().StringVar(&code, "code", "", "Authorization code (optional if interactive)")
+	cmd.Flags().StringVar(&scopesRaw, "scopes", "", "Comma-separated OAuth scopes")
+	cmd.Flags().StringVar(&code, "code", "", "OAuth authorization code")
 	mustMarkFlagRequired(cmd, "app-id")
+	mustMarkFlagRequired(cmd, "app-secret")
 	mustMarkFlagRequired(cmd, "redirect-uri")
+	mustMarkFlagRequired(cmd, "scopes")
+	mustMarkFlagRequired(cmd, "code")
 	return cmd
 }
 
@@ -353,15 +452,13 @@ func newAuthDiscoverCommand(runtime Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "discover",
-		Short: "Discover bindable assets for auth profiles",
+		Short: "Discover pages and Instagram account bindings",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
-			}
-			resolvedMode, err := normalizeAuthDiscoverMode(mode)
+			resolvedMode, err := normalizeDiscoverMode(mode)
 			if err != nil {
 				return err
 			}
@@ -370,25 +467,27 @@ func newAuthDiscoverCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			result, used, err := callAuthOptionalAutomationMethod(cmd.Context(), svc, []string{"Discover"}, map[string]any{
-				"profile": profile,
-				"mode":    resolvedMode,
-			})
+			pages, err := svc.DiscoverPagesAndIGBusinessAccounts(cmd.Context(), resolvedProfile)
 			if err != nil {
 				return err
 			}
-			if !used {
-				return errors.New("auth discover requires updated auth service API (TODO: implement Discover)")
+
+			data := map[string]any{
+				"status":  "ok",
+				"profile": resolvedProfile,
+				"mode":    resolvedMode,
+			}
+			switch resolvedMode {
+			case "pages":
+				data["pages"] = pages
+			case "ig":
+				data["instagram_accounts"] = flattenIGAccounts(pages)
 			}
 
-			return writeSuccess(cmd, runtime, "meta auth discover", mergeAuthCommandData(map[string]any{
-				"status":  "ok",
-				"profile": profile,
-				"mode":    resolvedMode,
-			}, result), nil, nil)
+			return writeSuccess(cmd, runtime, "meta auth discover", data, nil, nil)
 		},
 	}
+
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&mode, "mode", "", "Discovery mode: pages|ig")
 	mustMarkFlagRequired(cmd, "mode")
@@ -406,14 +505,9 @@ func newAuthPageTokenCommand(runtime Runtime) *cobra.Command {
 		Use:   "page-token",
 		Short: "Derive and store a page token using a source profile token",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
-			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
-			}
-			if sourceProfile == "" {
-				sourceProfile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
 
 			svc, err := newAuthCLIService()
@@ -421,7 +515,7 @@ func newAuthPageTokenCommand(runtime Runtime) *cobra.Command {
 				return err
 			}
 			if err := svc.DerivePageToken(cmd.Context(), auth.PageTokenInput{
-				Profile:       profile,
+				Profile:       resolvedProfile,
 				PageID:        pageID,
 				SourceProfile: sourceProfile,
 			}); err != nil {
@@ -430,7 +524,7 @@ func newAuthPageTokenCommand(runtime Runtime) *cobra.Command {
 
 			return writeSuccess(cmd, runtime, "meta auth page-token", map[string]any{
 				"status":         "ok",
-				"profile":        profile,
+				"profile":        resolvedProfile,
 				"source_profile": sourceProfile,
 			}, nil, nil)
 		},
@@ -458,26 +552,26 @@ func newAuthAppTokenCommand(runtime Runtime) *cobra.Command {
 		Use:   "set",
 		Short: "Create and store an app token from app credentials",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
-			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
 			svc, err := newAuthCLIService()
 			if err != nil {
 				return err
 			}
 			if err := svc.SetAppToken(cmd.Context(), auth.SetAppTokenInput{
-				Profile:   profile,
+				Profile:   resolvedProfile,
 				AppID:     appID,
 				AppSecret: appSecret,
+				AuthMode:  auth.AuthModeBoth,
+				Scopes:    []string{"ads_management"},
 			}); err != nil {
 				return err
 			}
 			return writeSuccess(cmd, runtime, "meta auth app-token set", map[string]any{
 				"status":  "ok",
-				"profile": profile,
+				"profile": resolvedProfile,
 			}, nil, nil)
 		},
 	}
@@ -500,40 +594,42 @@ func newAuthValidateCommand(runtime Runtime) *cobra.Command {
 		Use:   "validate",
 		Short: "Validate token configured for a profile",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
-			}
+			required := csvToSlice(requireScopes)
+
 			svc, err := newAuthCLIService()
 			if err != nil {
 				return err
 			}
 
-			requiredScopeList := csvToSlice(requireScopes)
-			resp, err := validateAuthProfileWithConstraints(cmd.Context(), svc, profile, minTTL, requiredScopeList)
+			metadata, err := svc.EnsureValid(cmd.Context(), resolvedProfile, minTTL, required)
+			if err != nil {
+				return err
+			}
+			resp, err := svc.ValidateProfile(cmd.Context(), resolvedProfile)
 			if err != nil {
 				return err
 			}
 
-			result := map[string]any{
-				"status":  "ok",
-				"profile": profile,
-				"debug":   resp.Data,
-			}
-			if minTTL > 0 {
-				result["min_ttl"] = minTTL.String()
-			}
-			if len(requiredScopeList) > 0 {
-				result["require_scopes"] = requiredScopeList
-			}
-
-			return writeSuccess(cmd, runtime, "meta auth validate", result, nil, nil)
+			return writeSuccess(cmd, runtime, "meta auth validate", map[string]any{
+				"status":         "ok",
+				"profile":        resolvedProfile,
+				"min_ttl":        minTTL.String(),
+				"require_scopes": required,
+				"metadata": map[string]any{
+					"is_valid":   metadata.IsValid,
+					"scopes":     metadata.Scopes,
+					"expires_at": metadata.ExpiresAt.Format(time.RFC3339),
+				},
+				"debug": resp.Data,
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
-	cmd.Flags().DurationVar(&minTTL, "min-ttl", 0, "Minimum remaining token TTL (for example 30m, 12h)")
+	cmd.Flags().DurationVar(&minTTL, "min-ttl", defaultAuthPreflightTTL, "Minimum remaining token TTL (for example 30m, 12h)")
 	cmd.Flags().StringVar(&requireScopes, "require-scopes", "", "Comma-separated scopes that must be present")
 	return cmd
 }
@@ -544,22 +640,20 @@ func newAuthRotateCommand(runtime Runtime) *cobra.Command {
 		Use:   "rotate",
 		Short: "Rotate token for a profile",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if profile == "" {
-				profile = runtime.ProfileName()
-			}
-			if profile == "" {
-				return errors.New("profile is required (--profile or global --profile)")
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
 			svc, err := newAuthCLIService()
 			if err != nil {
 				return err
 			}
-			if err := svc.RotateProfile(cmd.Context(), profile); err != nil {
+			if err := svc.RotateProfile(cmd.Context(), resolvedProfile); err != nil {
 				return err
 			}
 			return writeSuccess(cmd, runtime, "meta auth rotate", map[string]any{
 				"status":  "ok",
-				"profile": profile,
+				"profile": resolvedProfile,
 			}, nil, nil)
 		},
 	}
@@ -580,8 +674,9 @@ func newAuthDebugTokenCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if profile == "" {
-				profile = runtime.ProfileName()
+			resolvedProfile, err := resolveAuthProfile(runtime, profile)
+			if err != nil {
+				return err
 			}
 
 			var (
@@ -597,7 +692,7 @@ func newAuthDebugTokenCommand(runtime Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				_, selected, err := cfg.ResolveProfile(profile)
+				_, selected, err := cfg.ResolveProfile(resolvedProfile)
 				if err != nil {
 					return err
 				}
@@ -658,202 +753,152 @@ func newAuthListCommand(runtime Runtime) *cobra.Command {
 	return cmd
 }
 
-func newAuthService() (authCLIService, error) {
-	cfgPath, err := config.DefaultPath()
-	if err != nil {
-		return nil, err
+func runOAuthAutoLogin(cmd *cobra.Command, svc authCLIService, input oauthLoginInput) (oauthLoginResult, error) {
+	if strings.TrimSpace(input.Profile) == "" {
+		return oauthLoginResult{}, errors.New("profile is required")
 	}
-	return auth.NewService(cfgPath, auth.NewKeychainStore(), nil, auth.DefaultGraphBaseURL), nil
-}
+	if strings.TrimSpace(input.AppID) == "" {
+		return oauthLoginResult{}, errors.New("app id is required")
+	}
+	if strings.TrimSpace(input.AppSecret) == "" {
+		return oauthLoginResult{}, errors.New("app secret is required")
+	}
+	if len(input.Scopes) == 0 {
+		return oauthLoginResult{}, errors.New("scopes are required")
+	}
+	if input.Timeout <= 0 {
+		return oauthLoginResult{}, errors.New("timeout must be greater than zero")
+	}
+	redirectURI, err := localCallbackRedirectURI(input.ListenAddr)
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
 
-func validateAuthProfileWithConstraints(ctx context.Context, svc authCLIService, profile string, minTTL time.Duration, requiredScopes []string) (*auth.DebugTokenResponse, error) {
-	result, used, err := callAuthOptionalAutomationMethod(ctx, svc, []string{"ValidateProfileWithOptions", "ValidateWithOptions"}, map[string]any{
-		"profile":           profile,
-		"profile_name":      profile,
-		"min_ttl":           minTTL,
-		"min_ttl_seconds":   int64(minTTL / time.Second),
-		"require_scopes":    requiredScopes,
-		"required_scopes":   requiredScopes,
-		"requiredScopeList": requiredScopes,
+	verifier, challenge, err := newAuthPKCE()
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	state, err := newAuthOAuthState()
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	listener, err := newAuthOAuthListener(redirectURI, state)
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	defer listener.Close(context.Background())
+
+	resolvedRedirectURI := listener.RedirectURI()
+	authURL, err := buildAuthOAuthURLWithState(input.AppID, resolvedRedirectURI, input.Scopes, challenge, state, input.Version)
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Open this URL and complete login:\n%s\n", authURL)
+	if input.OpenBrowser {
+		if err := openAuthBrowser(authURL); err != nil {
+			return oauthLoginResult{}, err
+		}
+	}
+
+	code, err := listener.Wait(cmd.Context(), input.Timeout)
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+
+	shortToken, err := svc.ExchangeOAuthCode(cmd.Context(), auth.ExchangeCodeInput{
+		AppID:        input.AppID,
+		RedirectURI:  resolvedRedirectURI,
+		Code:         code,
+		CodeVerifier: verifier,
+		Version:      input.Version,
 	})
 	if err != nil {
-		return nil, err
+		return oauthLoginResult{}, err
+	}
+	longLived, err := svc.ExchangeLongLivedUserToken(cmd.Context(), auth.ExchangeLongLivedUserTokenInput{
+		AppID:           input.AppID,
+		AppSecret:       input.AppSecret,
+		ShortLivedToken: shortToken,
+		Version:         input.Version,
+	})
+	if err != nil {
+		return oauthLoginResult{}, err
 	}
 
-	var resp *auth.DebugTokenResponse
-	if used {
-		resp, err = extractDebugTokenResponse(result)
-		if err != nil {
-			return nil, err
+	debugResp, err := svc.DebugToken(cmd.Context(), input.Version, longLived.AccessToken, fmt.Sprintf("%s|%s", input.AppID, input.AppSecret))
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	metadata, err := auth.NormalizeDebugTokenMetadata(debugResp)
+	if err != nil {
+		return oauthLoginResult{}, err
+	}
+	if !metadata.IsValid {
+		return oauthLoginResult{}, errors.New("profile token is invalid")
+	}
+
+	now := time.Now().UTC()
+	expiresAt := metadata.ExpiresAt
+	if expiresAt.IsZero() {
+		if longLived.ExpiresInSeconds > 0 {
+			expiresAt = now.Add(time.Duration(longLived.ExpiresInSeconds) * time.Second)
+		} else {
+			expiresAt = now.Add(60 * 24 * time.Hour)
 		}
 	}
-	if resp == nil {
-		resp, err = svc.ValidateProfile(ctx, profile)
-		if err != nil {
-			return nil, err
-		}
+
+	if err := svc.AddUser(cmd.Context(), auth.AddUserInput{
+		Profile:         input.Profile,
+		AppID:           input.AppID,
+		Token:           longLived.AccessToken,
+		AppSecret:       input.AppSecret,
+		AuthProvider:    input.AuthProvider,
+		AuthMode:        input.AuthMode,
+		Scopes:          metadata.Scopes,
+		IssuedAt:        now.Format(time.RFC3339),
+		ExpiresAt:       expiresAt.Format(time.RFC3339),
+		LastValidatedAt: now.Format(time.RFC3339),
+		PageID:          input.PageID,
+		IGUserID:        input.IGUserID,
+	}); err != nil {
+		return oauthLoginResult{}, err
 	}
-	if err := enforceAuthValidateConstraints(resp.Data, minTTL, requiredScopes); err != nil {
-		return nil, err
-	}
-	return resp, nil
+
+	return oauthLoginResult{
+		AuthURL:       authURL,
+		RedirectURI:   resolvedRedirectURI,
+		ExpiresAt:     expiresAt,
+		Scopes:        metadata.Scopes,
+		TokenType:     auth.TokenTypeUser,
+		AuthProvider:  input.AuthProvider,
+		AuthMode:      input.AuthMode,
+		Profile:       input.Profile,
+		TokenIssuedAt: now,
+	}, nil
 }
 
-func extractDebugTokenResponse(result any) (*auth.DebugTokenResponse, error) {
-	if result == nil {
-		return nil, nil
+func resolveAuthProfile(runtime Runtime, profile string) (string, error) {
+	resolved := strings.TrimSpace(profile)
+	if resolved == "" {
+		resolved = runtime.ProfileName()
 	}
-	switch typed := result.(type) {
-	case *auth.DebugTokenResponse:
-		return typed, nil
-	case auth.DebugTokenResponse:
-		copy := typed
-		return &copy, nil
-	case map[string]any:
-		if data, ok := typed["data"].(map[string]any); ok {
-			return &auth.DebugTokenResponse{Data: data}, nil
-		}
-		if data, ok := typed["debug"].(map[string]any); ok {
-			return &auth.DebugTokenResponse{Data: data}, nil
-		}
-		return &auth.DebugTokenResponse{Data: typed}, nil
+	if resolved == "" {
+		return "", errors.New("profile is required (--profile or global --profile)")
 	}
-
-	value := reflect.ValueOf(result)
-	if !value.IsValid() {
-		return nil, nil
-	}
-	if value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return nil, nil
-		}
-		value = value.Elem()
-	}
-	if value.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("unsupported validate response type %T", result)
-	}
-
-	field := value.FieldByName("Data")
-	if !field.IsValid() {
-		return nil, fmt.Errorf("validate response %T does not expose Data", result)
-	}
-	if mapped, ok := asAuthDataMap(field.Interface()); ok {
-		return &auth.DebugTokenResponse{Data: mapped}, nil
-	}
-	return nil, fmt.Errorf("validate response %T Data is not an object", result)
+	return resolved, nil
 }
 
-func enforceAuthValidateConstraints(debugData map[string]any, minTTL time.Duration, requiredScopes []string) error {
-	if minTTL > 0 {
-		expiresAt, ok := parseUnixSeconds(debugData["expires_at"])
-		if !ok {
-			return errors.New("token metadata missing expires_at required by --min-ttl")
-		}
-		remaining := time.Unix(expiresAt, 0).Sub(authNow())
-		if remaining < minTTL {
-			return fmt.Errorf("token ttl %s is below required minimum %s", remaining.Round(time.Second), minTTL)
-		}
-	}
-
-	if len(requiredScopes) > 0 {
-		scopeSet := extractDebugTokenScopes(debugData)
-		missing := make([]string, 0, len(requiredScopes))
-		for _, required := range requiredScopes {
-			required = strings.TrimSpace(required)
-			if required == "" {
-				continue
-			}
-			if _, ok := scopeSet[required]; !ok {
-				missing = append(missing, required)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("token is missing required scopes: %s", strings.Join(missing, ", "))
-		}
-	}
-	return nil
-}
-
-func parseUnixSeconds(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int:
-		return int64(typed), true
-	case int8:
-		return int64(typed), true
-	case int16:
-		return int64(typed), true
-	case int32:
-		return int64(typed), true
-	case int64:
-		return typed, true
-	case uint:
-		return int64(typed), true
-	case uint8:
-		return int64(typed), true
-	case uint16:
-		return int64(typed), true
-	case uint32:
-		return int64(typed), true
-	case uint64:
-		return int64(typed), true
-	case float32:
-		return int64(typed), true
-	case float64:
-		return int64(typed), true
-	case string:
-		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
+func normalizeAuthMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	switch normalized {
+	case auth.AuthModeBoth, auth.AuthModeFacebook, auth.AuthModeInstagram:
+		return normalized, nil
 	default:
-		return 0, false
+		return "", errors.New("mode must be one of: both, facebook, instagram")
 	}
 }
 
-func extractDebugTokenScopes(debugData map[string]any) map[string]struct{} {
-	scopeSet := map[string]struct{}{}
-	collectDebugTokenScopes(scopeSet, debugData["scopes"])
-	collectDebugTokenScopes(scopeSet, debugData["granted_scopes"])
-	collectDebugTokenScopes(scopeSet, debugData["granular_scopes"])
-	collectDebugTokenScopes(scopeSet, debugData["scope"])
-	return scopeSet
-}
-
-func collectDebugTokenScopes(scopeSet map[string]struct{}, raw any) {
-	switch typed := raw.(type) {
-	case string:
-		for _, scope := range csvToSlice(typed) {
-			scopeSet[scope] = struct{}{}
-		}
-	case []string:
-		for _, scope := range typed {
-			scope = strings.TrimSpace(scope)
-			if scope != "" {
-				scopeSet[scope] = struct{}{}
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			collectDebugTokenScopes(scopeSet, item)
-		}
-	case map[string]any:
-		if scope, ok := typed["scope"].(string); ok {
-			scope = strings.TrimSpace(scope)
-			if scope != "" {
-				scopeSet[scope] = struct{}{}
-			}
-		}
-		if scope, ok := typed["name"].(string); ok {
-			scope = strings.TrimSpace(scope)
-			if scope != "" {
-				scopeSet[scope] = struct{}{}
-			}
-		}
-	}
-}
-
-func normalizeAuthDiscoverMode(mode string) (string, error) {
+func normalizeDiscoverMode(mode string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(mode))
 	switch normalized {
 	case "pages", "ig":
@@ -863,286 +908,118 @@ func normalizeAuthDiscoverMode(mode string) (string, error) {
 	}
 }
 
-func mergeAuthCommandData(data map[string]any, result any) map[string]any {
-	if result == nil {
-		return data
+func localCallbackRedirectURI(listenAddr string) (string, error) {
+	listenAddr = strings.TrimSpace(listenAddr)
+	if listenAddr == "" {
+		return "", errors.New("listen address is required")
 	}
-	if mapped, ok := asAuthDataMap(result); ok {
-		for key, value := range mapped {
-			data[key] = value
-		}
-		return data
+	if _, _, err := net.SplitHostPort(listenAddr); err != nil {
+		return "", fmt.Errorf("invalid --listen %q: expected host:port", listenAddr)
 	}
-	data["result"] = result
-	return data
+	uri := &url.URL{
+		Scheme: "http",
+		Host:   listenAddr,
+		Path:   defaultAuthCallbackPath,
+	}
+	return uri.String(), nil
 }
 
-func asAuthDataMap(value any) (map[string]any, bool) {
-	switch typed := value.(type) {
-	case map[string]any:
-		return typed, true
-	case *map[string]any:
-		if typed == nil {
-			return nil, false
-		}
-		return *typed, true
+func authProviderFromMode(mode string) string {
+	if mode == auth.AuthModeInstagram {
+		return auth.AuthProviderInstagram
 	}
-
-	ref := reflect.ValueOf(value)
-	if !ref.IsValid() || ref.Kind() != reflect.Map {
-		return nil, false
-	}
-	if ref.Type().Key().Kind() != reflect.String {
-		return nil, false
-	}
-	mapped := make(map[string]any, ref.Len())
-	iter := ref.MapRange()
-	for iter.Next() {
-		mapped[iter.Key().String()] = iter.Value().Interface()
-	}
-	return mapped, true
+	return auth.AuthProviderFacebookLogin
 }
 
-func callAuthOptionalAutomationMethod(ctx context.Context, svc any, methodNames []string, input map[string]any) (any, bool, error) {
-	for _, methodName := range methodNames {
-		result, used, err := callAuthAutomationMethod(ctx, svc, methodName, input)
-		if !used {
+func scopePackScopes(pack string, mode string) ([]string, error) {
+	base := map[string][]string{
+		"solo_smb": {
+			"ads_management",
+			"ads_read",
+			"business_management",
+			"pages_show_list",
+			"pages_read_engagement",
+			"pages_manage_posts",
+			"instagram_basic",
+			"instagram_content_publish",
+		},
+		"ads_only": {
+			"ads_management",
+			"ads_read",
+			"business_management",
+		},
+		"ig_publish": {
+			"instagram_basic",
+			"instagram_content_publish",
+			"pages_show_list",
+			"pages_read_engagement",
+		},
+	}
+	pack = strings.ToLower(strings.TrimSpace(pack))
+	scopes, ok := base[pack]
+	if !ok {
+		return nil, errors.New("scope-pack must be one of: solo_smb, ads_only, ig_publish")
+	}
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if mode == auth.AuthModeFacebook && strings.HasPrefix(scope, "instagram_") {
 			continue
 		}
-		return result, true, err
-	}
-	return nil, false, nil
-}
-
-func callAuthAutomationMethod(ctx context.Context, svc any, methodName string, input map[string]any) (any, bool, error) {
-	method := reflect.ValueOf(svc).MethodByName(methodName)
-	if !method.IsValid() {
-		return nil, false, nil
-	}
-
-	methodType := method.Type()
-	if methodType.NumIn() == 0 || methodType.NumIn() > 2 {
-		return nil, true, fmt.Errorf("auth service method %s has unsupported signature", methodName)
-	}
-
-	args := make([]reflect.Value, 0, methodType.NumIn())
-	inputOffset := 0
-	if methodType.In(0).Implements(contextType) {
-		args = append(args, reflect.ValueOf(ctx))
-		inputOffset = 1
-	}
-	if methodType.NumIn() != inputOffset+1 {
-		return nil, true, fmt.Errorf("auth service method %s has unsupported signature", methodName)
-	}
-
-	inputArg, err := buildAuthMethodInput(methodType.In(inputOffset), input)
-	if err != nil {
-		return nil, true, fmt.Errorf("prepare %s input: %w", methodName, err)
-	}
-	args = append(args, inputArg)
-
-	result, err := parseAuthMethodResult(method.Call(args))
-	if err != nil {
-		return nil, true, err
-	}
-	return result, true, nil
-}
-
-func buildAuthMethodInput(argType reflect.Type, input map[string]any) (reflect.Value, error) {
-	switch {
-	case argType.Kind() == reflect.Struct:
-		value := reflect.New(argType).Elem()
-		if err := populateAuthInputStruct(value, input); err != nil {
-			return reflect.Value{}, err
-		}
-		return value, nil
-	case argType.Kind() == reflect.Pointer && argType.Elem().Kind() == reflect.Struct:
-		value := reflect.New(argType.Elem())
-		if err := populateAuthInputStruct(value.Elem(), input); err != nil {
-			return reflect.Value{}, err
-		}
-		return value, nil
-	case argType.Kind() == reflect.Map && argType.Key().Kind() == reflect.String && argType.Elem().Kind() == reflect.Interface:
-		value := reflect.MakeMapWithSize(argType, len(input))
-		for key, raw := range input {
-			mapKey := reflect.ValueOf(key)
-			if mapKey.Type() != argType.Key() {
-				mapKey = mapKey.Convert(argType.Key())
-			}
-			if raw == nil {
-				value.SetMapIndex(mapKey, reflect.Zero(argType.Elem()))
+		if mode == auth.AuthModeInstagram {
+			if strings.HasPrefix(scope, "ads_") || scope == "business_management" {
 				continue
 			}
-			value.SetMapIndex(mapKey, reflect.ValueOf(raw))
 		}
-		return value, nil
-	default:
-		return reflect.Value{}, fmt.Errorf("unsupported input type %s", argType.String())
+		out = append(out, scope)
 	}
+	if len(out) == 0 {
+		return nil, errors.New("scope-pack selection produced empty scope set")
+	}
+	return out, nil
 }
 
-func populateAuthInputStruct(target reflect.Value, input map[string]any) error {
-	normalized := map[string]any{}
-	for key, value := range input {
-		normalized[canonicalAuthInputKey(key)] = value
+func firstDiscoveredPageID(pages []auth.DiscoveredPage) (string, bool) {
+	for _, page := range pages {
+		id := strings.TrimSpace(page.PageID)
+		if id != "" {
+			return id, true
+		}
 	}
+	return "", false
+}
 
-	targetType := target.Type()
-	for i := 0; i < target.NumField(); i++ {
-		fieldType := targetType.Field(i)
-		fieldValue := target.Field(i)
-		if !fieldValue.CanSet() || fieldType.PkgPath != "" {
+func firstDiscoveredIGUserID(pages []auth.DiscoveredPage) (string, bool) {
+	for _, page := range pages {
+		id := strings.TrimSpace(page.IGBusinessAccountID)
+		if id != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func flattenIGAccounts(pages []auth.DiscoveredPage) []map[string]any {
+	out := make([]map[string]any, 0)
+	for _, page := range pages {
+		igID := strings.TrimSpace(page.IGBusinessAccountID)
+		if igID == "" {
 			continue
 		}
-		raw, ok := normalized[canonicalAuthInputKey(fieldType.Name)]
-		if !ok {
-			continue
-		}
-		if err := assignAuthInputValue(fieldValue, raw); err != nil {
-			return fmt.Errorf("set field %s: %w", fieldType.Name, err)
-		}
+		out = append(out, map[string]any{
+			"page_id":    page.PageID,
+			"page_name":  page.Name,
+			"ig_user_id": igID,
+		})
 	}
-	return nil
+	return out
 }
 
-func assignAuthInputValue(target reflect.Value, value any) error {
-	if !target.CanSet() || value == nil {
-		return nil
+func newAuthService() (authCLIService, error) {
+	cfgPath, err := config.DefaultPath()
+	if err != nil {
+		return nil, err
 	}
-	if target.Type() == durationType {
-		switch typed := value.(type) {
-		case time.Duration:
-			target.SetInt(int64(typed))
-			return nil
-		case int64:
-			target.SetInt(typed)
-			return nil
-		case int:
-			target.SetInt(int64(typed))
-			return nil
-		case string:
-			parsed, err := time.ParseDuration(strings.TrimSpace(typed))
-			if err != nil {
-				return err
-			}
-			target.SetInt(int64(parsed))
-			return nil
-		}
-	}
-
-	valueRef := reflect.ValueOf(value)
-	if valueRef.Type().AssignableTo(target.Type()) {
-		target.Set(valueRef)
-		return nil
-	}
-	if valueRef.Type().ConvertibleTo(target.Type()) {
-		target.Set(valueRef.Convert(target.Type()))
-		return nil
-	}
-
-	switch target.Kind() {
-	case reflect.String:
-		switch typed := value.(type) {
-		case []string:
-			target.SetString(strings.Join(typed, ","))
-		case time.Duration:
-			target.SetString(typed.String())
-		default:
-			target.SetString(strings.TrimSpace(fmt.Sprint(value)))
-		}
-		return nil
-	case reflect.Bool:
-		if typed, ok := value.(bool); ok {
-			target.SetBool(typed)
-			return nil
-		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		switch typed := value.(type) {
-		case time.Duration:
-			target.SetInt(int64(typed / time.Second))
-			return nil
-		case int:
-			target.SetInt(int64(typed))
-			return nil
-		case int64:
-			target.SetInt(typed)
-			return nil
-		case float64:
-			target.SetInt(int64(typed))
-			return nil
-		}
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		switch typed := value.(type) {
-		case time.Duration:
-			target.SetUint(uint64(typed / time.Second))
-			return nil
-		case int:
-			target.SetUint(uint64(typed))
-			return nil
-		case int64:
-			target.SetUint(uint64(typed))
-			return nil
-		case float64:
-			target.SetUint(uint64(typed))
-			return nil
-		}
-	case reflect.Slice:
-		if target.Type().Elem().Kind() != reflect.String {
-			break
-		}
-		scopes := []string{}
-		switch typed := value.(type) {
-		case []string:
-			scopes = append(scopes, typed...)
-		case []any:
-			for _, item := range typed {
-				if scope, ok := item.(string); ok {
-					scopes = append(scopes, scope)
-				}
-			}
-		case string:
-			scopes = csvToSlice(typed)
-		default:
-			return fmt.Errorf("unsupported slice value type %T", value)
-		}
-		normalized := make([]string, 0, len(scopes))
-		for _, scope := range scopes {
-			scope = strings.TrimSpace(scope)
-			if scope != "" {
-				normalized = append(normalized, scope)
-			}
-		}
-		target.Set(reflect.ValueOf(normalized))
-		return nil
-	}
-	return fmt.Errorf("unsupported assignment %T -> %s", value, target.Type().String())
-}
-
-func canonicalAuthInputKey(value string) string {
-	builder := strings.Builder{}
-	for _, char := range value {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
-			builder.WriteRune(char)
-		}
-	}
-	return strings.ToLower(builder.String())
-}
-
-func parseAuthMethodResult(results []reflect.Value) (any, error) {
-	if len(results) == 0 {
-		return nil, nil
-	}
-	last := results[len(results)-1]
-	if last.Type().Implements(errorType) {
-		if !last.IsNil() {
-			return nil, last.Interface().(error)
-		}
-		if len(results) == 1 {
-			return nil, nil
-		}
-		return results[0].Interface(), nil
-	}
-	return results[0].Interface(), nil
+	return auth.NewService(cfgPath, auth.NewKeychainStore(), nil, auth.DefaultGraphBaseURL), nil
 }
 
 func mustMarkFlagRequired(cmd *cobra.Command, name string) {

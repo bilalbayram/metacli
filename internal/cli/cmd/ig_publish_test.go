@@ -215,6 +215,74 @@ func TestIGPublishFeedCommandExecutesImmediateFlow(t *testing.T) {
 	}
 }
 
+func TestIGPublishFeedCommandUsesProfileIGUserIDWhenFlagOmitted(t *testing.T) {
+	profile := config.Profile{GraphVersion: "v25.0"}
+	if !setOptionalProfileIGUserID(&profile, "17841400008461234") {
+		t.Skip("config.Profile does not expose ig_user_id yet")
+	}
+
+	stub := &igPublishSequenceHTTPClient{
+		t: t,
+		responses: []igPublishSequenceResponse{
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_100","status_code":"IN_PROGRESS"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"creation_100","status":"FINISHED","status_code":"FINISHED"}`,
+			},
+			{
+				statusCode: http.StatusOK,
+				response:   `{"id":"media_100"}`,
+			},
+		},
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   profile,
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"publish", "feed",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute ig publish feed with profile ig id: %v", err)
+	}
+	if len(stub.calls) == 0 {
+		t.Fatal("expected graph call")
+	}
+	uploadURL, err := url.Parse(stub.calls[0].url)
+	if err != nil {
+		t.Fatalf("parse upload url: %v", err)
+	}
+	if uploadURL.Path != "/v25.0/17841400008461234/media" {
+		t.Fatalf("unexpected upload path %q", uploadURL.Path)
+	}
+}
+
 func TestIGPublishFeedCommandWritesStructuredErrorWhenNotReady(t *testing.T) {
 	stub := &igPublishSequenceHTTPClient{
 		t: t,

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -128,6 +129,60 @@ func TestIGMediaUploadCommandExecutesShapedRequest(t *testing.T) {
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestIGMediaUploadCommandUsesProfileIGUserIDWhenFlagOmitted(t *testing.T) {
+	profile := config.Profile{GraphVersion: "v25.0"}
+	if !setOptionalProfileIGUserID(&profile, "17841400008461234") {
+		t.Skip("config.Profile does not expose ig_user_id yet")
+	}
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"id":"creation_100","status_code":"IN_PROGRESS"}`,
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   profile,
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewIGCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"media", "upload",
+		"--media-url", "https://cdn.example.com/image.jpg",
+		"--caption", "hello",
+		"--media-type", "IMAGE",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute ig media upload with profile ig id: %v", err)
+	}
+
+	parsedURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if parsedURL.Path != "/v25.0/17841400008461234/media" {
+		t.Fatalf("unexpected request path %q", parsedURL.Path)
 	}
 }
 
@@ -282,6 +337,22 @@ func useIGDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, e
 
 	igLoadProfileCredentials = loadFn
 	igNewGraphClient = clientFn
+}
+
+func setOptionalProfileIGUserID(profile *config.Profile, igUserID string) bool {
+	if profile == nil {
+		return false
+	}
+	profileValue := reflect.ValueOf(profile).Elem()
+	for _, fieldName := range []string{"IGUserID", "IgUserID"} {
+		field := profileValue.FieldByName(fieldName)
+		if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.String {
+			continue
+		}
+		field.SetString(igUserID)
+		return true
+	}
+	return false
 }
 
 func TestIGMediaStatusWritesStructuredErrorWhenCreationIDMissing(t *testing.T) {

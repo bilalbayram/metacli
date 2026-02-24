@@ -99,7 +99,7 @@ func TestOpsRunCommandWritesReportWithChecks(t *testing.T) {
 		t.Fatalf("initialize baseline state: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath)
 	if err != nil {
 		t.Fatalf("execute ops run: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestOpsRunCommandReturnsPolicyExitOnBlockingFindings(t *testing.T) {
 		t.Fatalf("save baseline state: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath)
 	if err == nil {
 		t.Fatal("expected blocking ops run to fail")
 	}
@@ -252,7 +252,7 @@ func TestOpsRunCommandReturnsPolicyExitOnSchemaPackDrift(t *testing.T) {
 		t.Fatalf("save baseline state: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath)
 	if err == nil {
 		t.Fatal("expected schema-drift ops run to fail")
 	}
@@ -301,7 +301,7 @@ func TestOpsRunCommandReturnsPolicyExitOnRateLimitThreshold(t *testing.T) {
 		t.Fatalf("write telemetry fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
 	if err == nil {
 		t.Fatal("expected rate-limit threshold ops run to fail")
 	}
@@ -350,7 +350,7 @@ func TestOpsRunCommandReturnsWarningExitOnRateLimitWarningThreshold(t *testing.T
 		t.Fatalf("write telemetry fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
 	if err == nil {
 		t.Fatal("expected rate-limit warning ops run to fail")
 	}
@@ -399,7 +399,7 @@ func TestOpsRunCommandWritesDeterministicJSONLSections(t *testing.T) {
 		t.Fatalf("initialize baseline state: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("jsonl"), "run", "--state-path", statePath)
+	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("jsonl"), "run", "--preflight-optional-policy", "skip", "--state-path", statePath)
 	if err != nil {
 		t.Fatalf("execute ops run: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestOpsRunCommandWritesDeterministicCSVSections(t *testing.T) {
 		t.Fatalf("initialize baseline state: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("csv"), "run", "--state-path", statePath)
+	stdout, stderr, err := executeOpsCommand(runtimeWithOutput("csv"), "run", "--preflight-optional-policy", "skip", "--state-path", statePath)
 	if err != nil {
 		t.Fatalf("execute ops run: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestOpsRunCommandReturnsPolicyExitOnRuntimeResponseShapeDrift(t *testing.T)
 		t.Fatalf("write runtime snapshot fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
 	if err == nil {
 		t.Fatal("expected runtime shape drift ops run to fail")
 	}
@@ -581,7 +581,7 @@ func TestOpsRunCommandReturnsRuntimeExitOnRuntimeEvaluationError(t *testing.T) {
 		t.Fatalf("write runtime snapshot fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--runtime-response-file", runtimeSnapshotPath)
 	if err == nil {
 		t.Fatal("expected runtime evaluation failure")
 	}
@@ -625,7 +625,7 @@ func TestOpsRunCommandReturnsInputExitWhenLintRequestProvidedWithoutRuntimeSnaps
 		t.Fatalf("write lint request fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--lint-request-file", lintRequestPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--lint-request-file", lintRequestPath)
 	if err == nil {
 		t.Fatal("expected ops run to fail when lint request spec is provided without runtime snapshot")
 	}
@@ -672,6 +672,7 @@ func TestOpsRunCommandLinksLintRequestSpecForRuntimeShapeDriftCheck(t *testing.T
 	stdout, stderr, err := executeOpsCommand(
 		Runtime{},
 		"run",
+		"--preflight-optional-policy", "skip",
 		"--state-path", statePath,
 		"--runtime-response-file", runtimeSnapshotPath,
 		"--lint-request-file", lintRequestPath,
@@ -720,7 +721,7 @@ func TestOpsRunCommandReturnsInputExitOnInvalidRateTelemetryFile(t *testing.T) {
 		t.Fatalf("write telemetry fixture: %v", err)
 	}
 
-	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--preflight-optional-policy", "skip", "--state-path", statePath, "--rate-telemetry-file", telemetryPath)
 	if err == nil {
 		t.Fatal("expected ops run to fail with invalid telemetry")
 	}
@@ -787,11 +788,14 @@ func TestOpsRunCommandReturnsPolicyExitOnPreflightViolations(t *testing.T) {
 	if err := json.Unmarshal(envelope.Data, &data); err != nil {
 		t.Fatalf("decode run data: %v", err)
 	}
-	if data.Report.Checks[3].Name != "permission_policy_preflight" {
-		t.Fatalf("unexpected preflight check name: %s", data.Report.Checks[3].Name)
+	if len(data.Report.Checks) != 1 {
+		t.Fatalf("expected fail-fast report with one check, got %d", len(data.Report.Checks))
 	}
-	if data.Report.Checks[3].Status != ops.CheckStatusFail {
-		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[3].Status)
+	if data.Report.Checks[0].Name != "permission_policy_preflight" {
+		t.Fatalf("unexpected preflight check name: %s", data.Report.Checks[0].Name)
+	}
+	if data.Report.Checks[0].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[0].Status)
 	}
 	if data.Report.Summary.Blocking != 1 {
 		t.Fatalf("unexpected summary values: %+v", data.Report.Summary)
@@ -833,6 +837,90 @@ func TestOpsRunCommandPassesPreflightWithValidProfileConfig(t *testing.T) {
 	}
 	if data.Report.Checks[3].Status != ops.CheckStatusPass {
 		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[3].Status)
+	}
+}
+
+func TestOpsRunCommandDefaultsToStrictOptionalPreflightPolicy(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath)
+	if err == nil {
+		t.Fatal("expected strict optional preflight policy to fail when profile is missing")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodePolicy {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodePolicy)
+	}
+
+	var data ops.RunResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode run data: %v", err)
+	}
+	if len(data.Report.Checks) != 1 {
+		t.Fatalf("expected one preflight check, got %d", len(data.Report.Checks))
+	}
+	if data.Report.Checks[0].Name != "permission_policy_preflight" {
+		t.Fatalf("unexpected preflight check name: %s", data.Report.Checks[0].Name)
+	}
+	if data.Report.Checks[0].Status != ops.CheckStatusFail {
+		t.Fatalf("unexpected preflight check status: %s", data.Report.Checks[0].Status)
+	}
+}
+
+func TestOpsRunCommandRejectsInvalidPreflightOptionalPolicy(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := ops.Initialize(statePath); err != nil {
+		t.Fatalf("initialize baseline state: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "run", "--state-path", statePath, "--preflight-optional-policy", "maybe")
+	if err == nil {
+		t.Fatal("expected invalid optional policy to fail")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodeInput {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodeInput)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stderr))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodeInput {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodeInput)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "input_error" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
 	}
 }
 

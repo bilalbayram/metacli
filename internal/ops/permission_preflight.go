@@ -8,18 +8,20 @@ import (
 )
 
 type PermissionPreflightSnapshot struct {
-	Enabled       bool   `json:"enabled"`
-	ProfileName   string `json:"profile_name,omitempty"`
-	Domain        string `json:"domain,omitempty"`
-	GraphVersion  string `json:"graph_version,omitempty"`
-	TokenType     string `json:"token_type,omitempty"`
-	BusinessID    string `json:"business_id,omitempty"`
-	AppID         string `json:"app_id,omitempty"`
-	PageID        string `json:"page_id,omitempty"`
-	SourceProfile string `json:"source_profile,omitempty"`
-	TokenRef      string `json:"token_ref,omitempty"`
-	AppSecretRef  string `json:"app_secret_ref,omitempty"`
-	LoadError     string `json:"load_error,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	OptionalPolicy string `json:"optional_policy,omitempty"`
+	SkipReason     string `json:"skip_reason,omitempty"`
+	ProfileName    string `json:"profile_name,omitempty"`
+	Domain         string `json:"domain,omitempty"`
+	GraphVersion   string `json:"graph_version,omitempty"`
+	TokenType      string `json:"token_type,omitempty"`
+	BusinessID     string `json:"business_id,omitempty"`
+	AppID          string `json:"app_id,omitempty"`
+	PageID         string `json:"page_id,omitempty"`
+	SourceProfile  string `json:"source_profile,omitempty"`
+	TokenRef       string `json:"token_ref,omitempty"`
+	AppSecretRef   string `json:"app_secret_ref,omitempty"`
+	LoadError      string `json:"load_error,omitempty"`
 }
 
 func evaluatePermissionPolicyPreflight(snapshot PermissionPreflightSnapshot) Check {
@@ -28,8 +30,23 @@ func evaluatePermissionPolicyPreflight(snapshot PermissionPreflightSnapshot) Che
 		Status: CheckStatusPass,
 	}
 
+	optionalPolicy := NormalizeOptionalModulePolicy(snapshot.OptionalPolicy)
+	if optionalPolicy == "" {
+		optionalPolicy = OptionalModulePolicySkip
+	}
+
 	if !snapshot.Enabled {
-		check.Message = "preflight skipped: auth profile data not provided"
+		skipReason := strings.TrimSpace(snapshot.SkipReason)
+		if skipReason == "" {
+			skipReason = "auth profile data not provided"
+		}
+		if optionalPolicy == OptionalModulePolicyStrict {
+			check.Status = CheckStatusFail
+			check.Blocking = true
+			check.Message = fmt.Sprintf("preflight failed: optional module unavailable under policy=%s: %s", optionalPolicy, skipReason)
+			return check
+		}
+		check.Message = fmt.Sprintf("preflight skipped: %s (policy=%s)", skipReason, optionalPolicy)
 		return check
 	}
 

@@ -22,6 +22,20 @@ func TestEvaluatePermissionPolicyPreflightSkipsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestEvaluatePermissionPolicyPreflightFailsWhenDisabledUnderStrictPolicy(t *testing.T) {
+	t.Parallel()
+
+	check := evaluatePermissionPolicyPreflight(PermissionPreflightSnapshot{
+		OptionalPolicy: OptionalModulePolicyStrict,
+	})
+	if check.Status != CheckStatusFail {
+		t.Fatalf("unexpected status: %s", check.Status)
+	}
+	if !check.Blocking {
+		t.Fatal("expected strict-policy disabled preflight to be blocking")
+	}
+}
+
 func TestEvaluatePermissionPolicyPreflightFailsOnLoadError(t *testing.T) {
 	t.Parallel()
 
@@ -99,11 +113,14 @@ func TestRunWithOptionsIncludesPreflightFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run with preflight options: %v", err)
 	}
-	if result.Report.Checks[3].Name != checkNamePermissionPolicyPreflight {
-		t.Fatalf("unexpected check name: %s", result.Report.Checks[3].Name)
+	if len(result.Report.Checks) != 1 {
+		t.Fatalf("expected fail-fast report with one check, got %d", len(result.Report.Checks))
 	}
-	if result.Report.Checks[3].Status != CheckStatusFail {
-		t.Fatalf("unexpected check status: %s", result.Report.Checks[3].Status)
+	if result.Report.Checks[0].Name != checkNamePermissionPolicyPreflight {
+		t.Fatalf("unexpected check name: %s", result.Report.Checks[0].Name)
+	}
+	if result.Report.Checks[0].Status != CheckStatusFail {
+		t.Fatalf("unexpected check status: %s", result.Report.Checks[0].Status)
 	}
 	if result.Report.Summary.Blocking != 1 {
 		t.Fatalf("unexpected summary: %+v", result.Report.Summary)

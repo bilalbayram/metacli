@@ -121,3 +121,40 @@ func TestRunExitCodeUsesWarningCodeForWarningFindings(t *testing.T) {
 		t.Fatalf("unexpected run exit code: got=%d want=%d", code, ExitCodeWarning)
 	}
 }
+
+func TestRunWithOptionsFailsClosedOnStrictOptionalPreflight(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "baseline-state.json")
+	if _, err := InitBaseline(path); err != nil {
+		t.Fatalf("init baseline: %v", err)
+	}
+
+	result, err := RunWithOptions(path, RunOptions{
+		OptionalModulePolicy: OptionalModulePolicyStrict,
+	})
+	if err != nil {
+		t.Fatalf("run with strict optional preflight policy: %v", err)
+	}
+	if len(result.Report.Checks) != 1 {
+		t.Fatalf("expected fail-fast preflight report to include one check, got %d", len(result.Report.Checks))
+	}
+	if result.Report.Checks[0].Name != checkNamePermissionPolicyPreflight {
+		t.Fatalf("unexpected check name: %s", result.Report.Checks[0].Name)
+	}
+	if result.Report.Checks[0].Status != CheckStatusFail {
+		t.Fatalf("unexpected check status: %s", result.Report.Checks[0].Status)
+	}
+	if !result.Report.Checks[0].Blocking {
+		t.Fatal("expected strict optional preflight failure to be blocking")
+	}
+	if result.Report.Summary.Blocking != 1 {
+		t.Fatalf("unexpected summary: %+v", result.Report.Summary)
+	}
+	if result.Report.Outcome != RunOutcomeBlocking {
+		t.Fatalf("unexpected report outcome: %s", result.Report.Outcome)
+	}
+	if code := RunExitCode(result.Report); code != ExitCodePolicy {
+		t.Fatalf("unexpected run exit code: got=%d want=%d", code, ExitCodePolicy)
+	}
+}

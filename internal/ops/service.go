@@ -54,11 +54,12 @@ var reportSectionDefinitions = []reportSectionDefinition{
 }
 
 type RunOptions struct {
-	RateLimitTelemetry  *RateLimitTelemetrySnapshot
-	PermissionPreflight *PermissionPreflightSnapshot
-	RuntimeResponse     *RuntimeResponseShapeSnapshot
-	LintRequestSpec     *lint.RequestSpec
-	LintRequestSpecFile string
+	RateLimitTelemetry   *RateLimitTelemetrySnapshot
+	PermissionPreflight  *PermissionPreflightSnapshot
+	RuntimeResponse      *RuntimeResponseShapeSnapshot
+	LintRequestSpec      *lint.RequestSpec
+	LintRequestSpecFile  string
+	OptionalModulePolicy string
 }
 
 func Initialize(statePath string) (InitResult, error) {
@@ -94,33 +95,26 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		}
 	}
 
+	if err := ValidateOptionalModulePolicy(options.OptionalModulePolicy); err != nil {
+		return RunResult{}, WrapExit(ExitCodeInput, err)
+	}
+	optionalPolicy := NormalizeOptionalModulePolicy(options.OptionalModulePolicy)
+
 	report := NewReportSkeleton(state)
-	currentSnapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
-	if err != nil {
-		return RunResult{}, WrapExit(ExitCodeRuntime, err)
-	}
-	report.Checks = append(report.Checks, evaluateChangelogOCCDelta(state.Snapshots.ChangelogOCC, currentSnapshot))
-
-	currentSchemaPack, err := captureSchemaPackSnapshot()
-	if err != nil {
-		return RunResult{}, WrapExit(ExitCodeRuntime, err)
-	}
-	report.Checks = append(report.Checks, evaluateSchemaPackDrift(state.Snapshots.SchemaPack, currentSchemaPack))
-
-	rateTelemetry := state.Snapshots.RateLimit
-	if options.RateLimitTelemetry != nil {
-		if err := options.RateLimitTelemetry.Validate(); err != nil {
-			return RunResult{}, WrapExit(ExitCodeInput, err)
-		}
-		rateTelemetry = *options.RateLimitTelemetry
-	}
-	report.Checks = append(report.Checks, evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold))
-
 	preflightSnapshot := PermissionPreflightSnapshot{}
 	if options.PermissionPreflight != nil {
 		preflightSnapshot = *options.PermissionPreflight
 	}
-	report.Checks = append(report.Checks, evaluatePermissionPolicyPreflight(preflightSnapshot))
+	preflightSnapshot.OptionalPolicy = optionalPolicy
+	preflightCheck := evaluatePermissionPolicyPreflight(preflightSnapshot)
+	if preflightCheck.Status == CheckStatusFail && preflightCheck.Blocking {
+		report.Checks = append(report.Checks, preflightCheck)
+		finalizeRunReport(&report)
+		return RunResult{
+			StatePath: statePath,
+			Report:    report,
+		}, nil
+	}
 
 	if options.RuntimeResponse != nil {
 		if err := options.RuntimeResponse.Validate(); err != nil {
@@ -136,6 +130,27 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 		return RunResult{}, WrapExit(ExitCodeInput, errors.New("runtime response snapshot is required when lint request spec is provided"))
 	}
 
+	currentSnapshot, err := captureChangelogOCCSnapshot(time.Now().UTC())
+	if err != nil {
+		return RunResult{}, WrapExit(ExitCodeRuntime, err)
+	}
+	changelogCheck := evaluateChangelogOCCDelta(state.Snapshots.ChangelogOCC, currentSnapshot)
+
+	currentSchemaPack, err := captureSchemaPackSnapshot()
+	if err != nil {
+		return RunResult{}, WrapExit(ExitCodeRuntime, err)
+	}
+	schemaPackCheck := evaluateSchemaPackDrift(state.Snapshots.SchemaPack, currentSchemaPack)
+
+	rateTelemetry := state.Snapshots.RateLimit
+	if options.RateLimitTelemetry != nil {
+		if err := options.RateLimitTelemetry.Validate(); err != nil {
+			return RunResult{}, WrapExit(ExitCodeInput, err)
+		}
+		rateTelemetry = *options.RateLimitTelemetry
+	}
+	rateLimitCheck := evaluateRateLimitThreshold(rateTelemetry, DefaultRateLimitWarningThreshold, DefaultRateLimitThreshold)
+
 	runtimeDriftCheck, err := evaluateRuntimeResponseShapeDrift(
 		state.Snapshots.SchemaPack,
 		options.RuntimeResponse,
@@ -145,15 +160,29 @@ func RunWithOptions(statePath string, options RunOptions) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, WrapExit(ExitCodeRuntime, err)
 	}
-	report.Checks = append(report.Checks, runtimeDriftCheck)
-	report.Summary = summarizeChecks(report.Checks)
-	report.Outcome = summarizeOutcome(report.Summary)
-	report.Sections = composeReportSections(report.Checks)
+	report.Checks = append(
+		report.Checks,
+		changelogCheck,
+		schemaPackCheck,
+		rateLimitCheck,
+		preflightCheck,
+		runtimeDriftCheck,
+	)
+	finalizeRunReport(&report)
 
 	return RunResult{
 		StatePath: statePath,
 		Report:    report,
 	}, nil
+}
+
+func finalizeRunReport(report *Report) {
+	if report == nil {
+		return
+	}
+	report.Summary = summarizeChecks(report.Checks)
+	report.Outcome = summarizeOutcome(report.Summary)
+	report.Sections = composeReportSections(report.Checks)
 }
 
 func RunExitCode(report Report) int {

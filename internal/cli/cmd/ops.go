@@ -63,6 +63,7 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	var statePath string
 	var rateTelemetryPath string
 	var preflightConfigPath string
+	var preflightOptionalPolicy string
 	var runtimeResponsePath string
 	var lintRequestPath string
 
@@ -79,7 +80,17 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 				return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeState, err))
 			}
 
-			runOptions := ops.RunOptions{}
+			if err := ops.ValidateOptionalModulePolicy(preflightOptionalPolicy); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandRun, ops.WrapExit(ops.ExitCodeInput, err))
+			}
+			normalizedPreflightOptionalPolicy := ops.NormalizeOptionalModulePolicy(preflightOptionalPolicy)
+
+			runOptions := ops.RunOptions{
+				OptionalModulePolicy: normalizedPreflightOptionalPolicy,
+			}
+			preflightSnapshot := buildPermissionPreflightSnapshot(runtime.ProfileName(), preflightConfigPath, normalizedPreflightOptionalPolicy)
+			runOptions.PermissionPreflight = &preflightSnapshot
+
 			if strings.TrimSpace(rateTelemetryPath) != "" {
 				snapshot, err := loadRateLimitTelemetrySnapshot(rateTelemetryPath)
 				if err != nil {
@@ -102,8 +113,6 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 				runOptions.LintRequestSpec = spec
 				runOptions.LintRequestSpecFile = lintRequestPath
 			}
-			preflightSnapshot := buildPermissionPreflightSnapshot(runtime.ProfileName(), preflightConfigPath)
-			runOptions.PermissionPreflight = &preflightSnapshot
 
 			result, err := ops.RunWithOptions(resolvedPath, runOptions)
 			if err != nil {
@@ -144,6 +153,7 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&statePath, "state-path", "", "Path to baseline state JSON file")
 	cmd.Flags().StringVar(&rateTelemetryPath, "rate-telemetry-file", "", "Path to rate-limit telemetry JSON snapshot file")
 	cmd.Flags().StringVar(&preflightConfigPath, "preflight-config-path", "", "Path to auth config file used for permission preflight")
+	cmd.Flags().StringVar(&preflightOptionalPolicy, "preflight-optional-policy", ops.OptionalModulePolicyStrict, "Policy for optional preflight modules: strict|skip")
 	cmd.Flags().StringVar(&runtimeResponsePath, "runtime-response-file", "", "Path to runtime response shape snapshot JSON file")
 	cmd.Flags().StringVar(&lintRequestPath, "lint-request-file", "", "Path to lint request spec JSON file linked to runtime drift check")
 	return cmd
@@ -259,22 +269,27 @@ func loadRuntimeResponseShapeSnapshot(path string) (ops.RuntimeResponseShapeSnap
 	return snapshot, nil
 }
 
-func buildPermissionPreflightSnapshot(profileName string, configPath string) ops.PermissionPreflightSnapshot {
+func buildPermissionPreflightSnapshot(profileName string, configPath string, optionalPolicy string) ops.PermissionPreflightSnapshot {
 	profileName = strings.TrimSpace(profileName)
+	optionalPolicy = ops.NormalizeOptionalModulePolicy(optionalPolicy)
+	configPath = strings.TrimSpace(configPath)
+	explicitConfigPath := configPath != ""
 	if profileName == "" {
 		return ops.PermissionPreflightSnapshot{
-			Enabled: false,
+			Enabled:        false,
+			OptionalPolicy: optionalPolicy,
+			SkipReason:     "auth profile data not provided",
 		}
 	}
 
-	configPath = strings.TrimSpace(configPath)
 	if configPath == "" {
 		defaultPath, err := config.DefaultPath()
 		if err != nil {
 			return ops.PermissionPreflightSnapshot{
-				Enabled:     true,
-				ProfileName: profileName,
-				LoadError:   err.Error(),
+				Enabled:        true,
+				OptionalPolicy: optionalPolicy,
+				ProfileName:    profileName,
+				LoadError:      err.Error(),
 			}
 		}
 		configPath = defaultPath
@@ -282,32 +297,43 @@ func buildPermissionPreflightSnapshot(profileName string, configPath string) ops
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
+		if !explicitConfigPath && strings.EqualFold(optionalPolicy, ops.OptionalModulePolicySkip) && errors.Is(err, os.ErrNotExist) {
+			return ops.PermissionPreflightSnapshot{
+				Enabled:        false,
+				OptionalPolicy: optionalPolicy,
+				ProfileName:    profileName,
+				SkipReason:     fmt.Sprintf("config file is not available at %s", configPath),
+			}
+		}
 		return ops.PermissionPreflightSnapshot{
-			Enabled:     true,
-			ProfileName: profileName,
-			LoadError:   err.Error(),
+			Enabled:        true,
+			OptionalPolicy: optionalPolicy,
+			ProfileName:    profileName,
+			LoadError:      err.Error(),
 		}
 	}
 	_, profile, err := cfg.ResolveProfile(profileName)
 	if err != nil {
 		return ops.PermissionPreflightSnapshot{
-			Enabled:     true,
-			ProfileName: profileName,
-			LoadError:   err.Error(),
+			Enabled:        true,
+			OptionalPolicy: optionalPolicy,
+			ProfileName:    profileName,
+			LoadError:      err.Error(),
 		}
 	}
 
 	return ops.PermissionPreflightSnapshot{
-		Enabled:       true,
-		ProfileName:   profileName,
-		Domain:        profile.Domain,
-		GraphVersion:  profile.GraphVersion,
-		TokenType:     profile.TokenType,
-		BusinessID:    profile.BusinessID,
-		AppID:         profile.AppID,
-		PageID:        profile.PageID,
-		SourceProfile: profile.SourceProfile,
-		TokenRef:      profile.TokenRef,
-		AppSecretRef:  profile.AppSecretRef,
+		Enabled:        true,
+		OptionalPolicy: optionalPolicy,
+		ProfileName:    profileName,
+		Domain:         profile.Domain,
+		GraphVersion:   profile.GraphVersion,
+		TokenType:      profile.TokenType,
+		BusinessID:     profile.BusinessID,
+		AppID:          profile.AppID,
+		PageID:         profile.PageID,
+		SourceProfile:  profile.SourceProfile,
+		TokenRef:       profile.TokenRef,
+		AppSecretRef:   profile.AppSecretRef,
 	}
 }

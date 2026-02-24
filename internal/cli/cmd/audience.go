@@ -9,6 +9,7 @@ import (
 	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/marketing"
+	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/bilalbayram/metacli/internal/output"
 	"github.com/bilalbayram/metacli/internal/schema"
 	"github.com/spf13/cobra"
@@ -109,6 +110,20 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 				Params:    form,
 			})
 			if err != nil {
+				return writeCommandError(cmd, runtime, "meta audience create", err)
+			}
+			if err := persistTrackedResource(trackedResourceInput{
+				Command:       "meta audience create",
+				ResourceKind:  ops.ResourceKindAudience,
+				ResourceID:    result.AudienceID,
+				CleanupAction: ops.CleanupActionDelete,
+				Profile:       creds.Name,
+				GraphVersion:  resolvedVersion,
+				AccountID:     accountID,
+				Metadata: map[string]string{
+					"operation": result.Operation,
+				},
+			}); err != nil {
 				return writeCommandError(cmd, runtime, "meta audience create", err)
 			}
 

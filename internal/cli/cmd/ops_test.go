@@ -5,11 +5,15 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/bilalbayram/metacli/internal/config"
+	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/ops"
 )
 
@@ -88,6 +92,196 @@ func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
 	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 4,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"94d9287ab1d2445304fdbf6e5fb9a09e2e4cec9f3c655337e7d33a0114793529\"\n    },\n    \"rate_limit\": {\n      \"app_call_count\": 0,\n      \"app_total_cputime\": 0,\n      \"app_total_time\": 0,\n      \"page_call_count\": 0,\n      \"page_total_cputime\": 0,\n      \"page_total_time\": 0,\n      \"ad_account_util_pct\": 0\n    }\n  }\n}\n"
 	if string(rawState) != expectedState {
 		t.Fatalf("unexpected state file contents:\n%s", string(rawState))
+	}
+}
+
+func TestOpsCleanupCommandDryRunClassifiesTrackedResources(t *testing.T) {
+	t.Parallel()
+
+	ledgerPath := filepath.Join(t.TempDir(), "resource-ledger.json")
+	ledger := ops.NewResourceLedger()
+	ledger.Resources = append(ledger.Resources, ops.TrackedResource{
+		Sequence:      1,
+		Command:       "meta campaign create",
+		ResourceKind:  ops.ResourceKindCampaign,
+		ResourceID:    "cmp_1001",
+		CleanupAction: ops.CleanupActionPause,
+	})
+	ledger.Resources = append(ledger.Resources, ops.TrackedResource{
+		Sequence:      2,
+		Command:       "meta audience create",
+		ResourceKind:  ops.ResourceKindAudience,
+		ResourceID:    "aud_2001",
+		CleanupAction: ops.CleanupActionDelete,
+	})
+	if err := ops.SaveResourceLedger(ledgerPath, ledger); err != nil {
+		t.Fatalf("save resource ledger: %v", err)
+	}
+
+	stdout, stderr, err := executeOpsCommand(Runtime{}, "cleanup", "--ledger-path", ledgerPath)
+	if err != nil {
+		t.Fatalf("execute ops cleanup dry-run: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Command != ops.CommandCleanup {
+		t.Fatalf("unexpected command: %s", envelope.Command)
+	}
+	if !envelope.Success {
+		t.Fatal("expected success=true")
+	}
+	if envelope.ExitCode != ops.ExitCodeSuccess {
+		t.Fatalf("unexpected exit code: %d", envelope.ExitCode)
+	}
+
+	var data ops.CleanupResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode cleanup data: %v", err)
+	}
+	if data.Mode != ops.CleanupModeDryRun {
+		t.Fatalf("unexpected cleanup mode: %s", data.Mode)
+	}
+	if data.Summary.Total != 2 || data.Summary.DryRun != 2 || data.Summary.Applied != 0 || data.Summary.Failed != 0 || data.Summary.Remaining != 2 {
+		t.Fatalf("unexpected summary: %+v", data.Summary)
+	}
+	for _, resource := range data.Resources {
+		if resource.Classification != ops.CleanupClassificationDryRun {
+			t.Fatalf("unexpected classification: %s", resource.Classification)
+		}
+		if !resource.Success {
+			t.Fatal("expected dry-run resource to be successful")
+		}
+	}
+}
+
+func TestOpsCleanupCommandApplyReturnsPolicyExitAndRetainsFailedResources(t *testing.T) {
+	ledgerPath := filepath.Join(t.TempDir(), "resource-ledger.json")
+	ledger := ops.NewResourceLedger()
+	ledger.Resources = append(ledger.Resources, ops.TrackedResource{
+		Sequence:      1,
+		Command:       "meta campaign create",
+		ResourceKind:  ops.ResourceKindCampaign,
+		ResourceID:    "cmp_1001",
+		CleanupAction: ops.CleanupActionPause,
+	})
+	ledger.Resources = append(ledger.Resources, ops.TrackedResource{
+		Sequence:      2,
+		Command:       "meta audience create",
+		ResourceKind:  ops.ResourceKindAudience,
+		ResourceID:    "aud_2001",
+		CleanupAction: ops.CleanupActionDelete,
+	})
+	if err := ops.SaveResourceLedger(ledgerPath, ledger); err != nil {
+		t.Fatalf("save resource ledger: %v", err)
+	}
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			if req.Method != http.MethodPost {
+				t.Fatalf("unexpected method for first cleanup call: %s", req.Method)
+			}
+			if req.URL.Path != "/v25.0/cmp_1001" {
+				t.Fatalf("unexpected path for first cleanup call: %s", req.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write([]byte(`{"success":true}`)); err != nil {
+				t.Fatalf("write cleanup pause response: %v", err)
+			}
+		case 2:
+			if req.Method != http.MethodDelete {
+				t.Fatalf("unexpected method for second cleanup call: %s", req.Method)
+			}
+			if req.URL.Path != "/v25.0/aud_2001" {
+				t.Fatalf("unexpected path for second cleanup call: %s", req.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"type":"OAuthException","code":190,"message":"invalid token"}}`)); err != nil {
+				t.Fatalf("write cleanup delete response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected cleanup request #%d", callCount)
+		}
+	}))
+	defer server.Close()
+
+	useOpsDependencies(t,
+		func(profile string) (*ProfileCredentials, error) {
+			if profile != "prod" {
+				t.Fatalf("unexpected profile: %s", profile)
+			}
+			return &ProfileCredentials{
+				Name:  "prod",
+				Token: "token",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	stdout, stderr, err := executeOpsCommand(runtimeWithProfile("prod"), "cleanup", "--ledger-path", ledgerPath, "--apply")
+	if err == nil {
+		t.Fatal("expected cleanup apply with failures to return an error")
+	}
+	var exitErr *ops.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.Code != ops.ExitCodePolicy {
+		t.Fatalf("unexpected exit code: got=%d want=%d", exitErr.Code, ops.ExitCodePolicy)
+	}
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+
+	envelope := decodeOpsEnvelope(t, []byte(stdout))
+	if envelope.Success {
+		t.Fatal("expected success=false")
+	}
+	if envelope.ExitCode != ops.ExitCodePolicy {
+		t.Fatalf("unexpected envelope exit code: got=%d want=%d", envelope.ExitCode, ops.ExitCodePolicy)
+	}
+	if envelope.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if envelope.Error.Type != "cleanup_failures" {
+		t.Fatalf("unexpected error type: %s", envelope.Error.Type)
+	}
+
+	var data ops.CleanupResult
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode cleanup data: %v", err)
+	}
+	if data.Mode != ops.CleanupModeApply {
+		t.Fatalf("unexpected cleanup mode: %s", data.Mode)
+	}
+	if data.Summary.Total != 2 || data.Summary.Applied != 1 || data.Summary.Failed != 1 || data.Summary.Remaining != 1 {
+		t.Fatalf("unexpected summary: %+v", data.Summary)
+	}
+
+	remainingLedger, err := ops.LoadResourceLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("reload resource ledger: %v", err)
+	}
+	if len(remainingLedger.Resources) != 1 {
+		t.Fatalf("expected one remaining ledger entry, got %d", len(remainingLedger.Resources))
+	}
+	if remainingLedger.Resources[0].ResourceKind != ops.ResourceKindAudience || remainingLedger.Resources[0].ResourceID != "aud_2001" {
+		t.Fatalf("unexpected remaining ledger resource: %+v", remainingLedger.Resources[0])
 	}
 }
 
@@ -999,4 +1193,17 @@ func runtimeWithOutput(format string) Runtime {
 		Output: &format,
 		Debug:  &debug,
 	}
+}
+
+func useOpsDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
+	t.Helper()
+	originalLoad := opsLoadProfileCredentials
+	originalClient := opsNewGraphClient
+	t.Cleanup(func() {
+		opsLoadProfileCredentials = originalLoad
+		opsNewGraphClient = originalClient
+	})
+
+	opsLoadProfileCredentials = loadFn
+	opsNewGraphClient = clientFn
 }

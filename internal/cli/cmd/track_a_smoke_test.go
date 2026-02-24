@@ -15,6 +15,7 @@ import (
 
 	"github.com/bilalbayram/metacli/internal/config"
 	"github.com/bilalbayram/metacli/internal/graph"
+	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +31,8 @@ func TestTrackAWorkflowSmokeCLICommands(t *testing.T) {
 	schemaDir := writeTrackASmokeSchemaPack(t)
 	uploadPayloadPath := writeTrackACatalogPayloadFile(t, "upload-items.json", `[{"retailer_id":"sku_track_1","data":{"name":"TrackA Shirt","price":"10.00 USD"}}]`)
 	batchPayloadPath := writeTrackACatalogPayloadFile(t, "batch-items.json", `[{"method":"UPDATE","retailer_id":"sku_track_1","data":{"price":"bad"}}]`)
+	ledgerPath := filepath.Join(t.TempDir(), "resource-ledger.json")
+	t.Setenv(resourceLedgerPathEnv, ledgerPath)
 
 	expectedCalls := []trackASmokeGraphCall{
 		{
@@ -315,6 +318,37 @@ func TestTrackAWorkflowSmokeCLICommands(t *testing.T) {
 
 	if callIndex != len(expectedCalls) {
 		t.Fatalf("expected %d graph calls, got %d", len(expectedCalls), callIndex)
+	}
+
+	ledger, err := ops.LoadResourceLedger(ledgerPath)
+	if err != nil {
+		t.Fatalf("load resource ledger: %v", err)
+	}
+	if len(ledger.Resources) != 5 {
+		t.Fatalf("expected five tracked resources, got %d", len(ledger.Resources))
+	}
+	expectedResources := []struct {
+		kind   string
+		id     string
+		action string
+	}{
+		{kind: ops.ResourceKindCampaign, id: "cmp_1001", action: ops.CleanupActionPause},
+		{kind: ops.ResourceKindAdSet, id: "adset_2001", action: ops.CleanupActionPause},
+		{kind: ops.ResourceKindCreative, id: "creative_3001", action: ops.CleanupActionDelete},
+		{kind: ops.ResourceKindAd, id: "ad_4001", action: ops.CleanupActionPause},
+		{kind: ops.ResourceKindAudience, id: "aud_5001", action: ops.CleanupActionDelete},
+	}
+	for index, expected := range expectedResources {
+		resource := ledger.Resources[index]
+		if resource.ResourceKind != expected.kind {
+			t.Fatalf("unexpected tracked resource kind at index %d: got=%s want=%s", index, resource.ResourceKind, expected.kind)
+		}
+		if resource.ResourceID != expected.id {
+			t.Fatalf("unexpected tracked resource id at index %d: got=%s want=%s", index, resource.ResourceID, expected.id)
+		}
+		if resource.CleanupAction != expected.action {
+			t.Fatalf("unexpected tracked cleanup action at index %d: got=%s want=%s", index, resource.CleanupAction, expected.action)
+		}
 	}
 }
 

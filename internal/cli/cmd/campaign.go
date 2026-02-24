@@ -9,6 +9,7 @@ import (
 	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/marketing"
+	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/bilalbayram/metacli/internal/requirements"
 	"github.com/bilalbayram/metacli/internal/schema"
 	"github.com/spf13/cobra"
@@ -149,6 +150,20 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 				Params:    plan.FinalPayload,
 			})
 			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign create", err)
+			}
+			if err := persistTrackedResource(trackedResourceInput{
+				Command:       "meta campaign create",
+				ResourceKind:  ops.ResourceKindCampaign,
+				ResourceID:    result.CampaignID,
+				CleanupAction: ops.CleanupActionPause,
+				Profile:       creds.Name,
+				GraphVersion:  resolvedVersion,
+				AccountID:     accountID,
+				Metadata: map[string]string{
+					"operation": result.Operation,
+				},
+			}); err != nil {
 				return writeCommandError(cmd, runtime, "meta campaign create", err)
 			}
 
@@ -503,6 +518,21 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 				Payload:          copyCampaignPayload(plan.FinalPayload),
 				RemovedFields:    append([]string(nil), clonePlan.RemovedFields...),
 				Response:         cloneAnyMap(createResult.Response),
+			}
+			if err := persistTrackedResource(trackedResourceInput{
+				Command:       "meta campaign clone",
+				ResourceKind:  ops.ResourceKindCampaign,
+				ResourceID:    result.CampaignID,
+				CleanupAction: ops.CleanupActionPause,
+				Profile:       creds.Name,
+				GraphVersion:  resolvedVersion,
+				AccountID:     clonePlan.TargetAccountID,
+				SourceID:      clonePlan.SourceCampaignID,
+				Metadata: map[string]string{
+					"operation": result.Operation,
+				},
+			}); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign clone", err)
 			}
 
 			return writeSuccess(cmd, runtime, "meta campaign clone", result, nil, nil)

@@ -12,6 +12,7 @@ import (
 	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/marketing"
+	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/bilalbayram/metacli/internal/schema"
 	"github.com/spf13/cobra"
 )
@@ -143,6 +144,20 @@ func newAdsetCreateCommand(runtime Runtime) *cobra.Command {
 				Params:    form,
 			})
 			if err != nil {
+				return writeCommandError(cmd, runtime, "meta adset create", err)
+			}
+			if err := persistTrackedResource(trackedResourceInput{
+				Command:       "meta adset create",
+				ResourceKind:  ops.ResourceKindAdSet,
+				ResourceID:    result.AdSetID,
+				CleanupAction: ops.CleanupActionPause,
+				Profile:       creds.Name,
+				GraphVersion:  resolvedVersion,
+				AccountID:     accountID,
+				Metadata: map[string]string{
+					"operation": result.Operation,
+				},
+			}); err != nil {
 				return writeCommandError(cmd, runtime, "meta adset create", err)
 			}
 

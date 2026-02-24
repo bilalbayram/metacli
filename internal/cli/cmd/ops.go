@@ -10,9 +10,17 @@ import (
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/config"
+	"github.com/bilalbayram/metacli/internal/graph"
 	"github.com/bilalbayram/metacli/internal/lint"
 	"github.com/bilalbayram/metacli/internal/ops"
 	"github.com/spf13/cobra"
+)
+
+var (
+	opsLoadProfileCredentials = loadProfileCredentials
+	opsNewGraphClient         = func() *graph.Client {
+		return graph.NewClient(nil, "")
+	}
 )
 
 func NewOpsCommand(runtime Runtime) *cobra.Command {
@@ -24,6 +32,7 @@ func NewOpsCommand(runtime Runtime) *cobra.Command {
 	}
 	opsCmd.AddCommand(newOpsInitCommand(runtime))
 	opsCmd.AddCommand(newOpsRunCommand(runtime))
+	opsCmd.AddCommand(newOpsCleanupCommand(runtime))
 	return opsCmd
 }
 
@@ -159,6 +168,76 @@ func newOpsRunCommand(runtime Runtime) *cobra.Command {
 	return cmd
 }
 
+func newOpsCleanupCommand(runtime Runtime) *cobra.Command {
+	var ledgerPath string
+	var apply bool
+	var profile string
+	var version string
+
+	cmd := &cobra.Command{
+		Use:   "cleanup",
+		Short: "Classify and clean up tracked resources from the resource ledger",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := ensureOpsOutput(runtime, ops.CommandCleanup); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandCleanup, ops.WrapExit(ops.ExitCodeInput, err))
+			}
+
+			resolvedLedgerPath, err := resolveResourceLedgerPath(ledgerPath)
+			if err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandCleanup, ops.WrapExit(ops.ExitCodeState, err))
+			}
+
+			options := ops.CleanupOptions{
+				Apply: apply,
+			}
+			if apply {
+				creds, resolvedVersion, err := resolveOpsCleanupProfileAndVersion(runtime, profile, version)
+				if err != nil {
+					return writeOpsError(cmd, runtime, ops.CommandCleanup, ops.WrapExit(ops.ExitCodeInput, err))
+				}
+				options.Version = resolvedVersion
+				options.Token = creds.Token
+				options.AppSecret = creds.AppSecret
+				options.Executor = ops.NewGraphCleanupExecutor(opsNewGraphClient())
+			}
+
+			result, err := ops.CleanupResourceLedger(cmd.Context(), resolvedLedgerPath, options)
+			if err != nil {
+				code := ops.ExitCodeState
+				switch {
+				case errors.Is(err, ops.ErrResourceLedgerPathRequired):
+					code = ops.ExitCodeInput
+				case errors.Is(err, ops.ErrCleanupApplyVersionRequired), errors.Is(err, ops.ErrCleanupApplyTokenRequired):
+					code = ops.ExitCodeInput
+				}
+				return writeOpsError(cmd, runtime, ops.CommandCleanup, ops.WrapExit(code, err))
+			}
+
+			envelope := ops.NewSuccessEnvelope(ops.CommandCleanup, result)
+			if apply && result.Summary.Failed > 0 {
+				envelope.Success = false
+				envelope.ExitCode = ops.ExitCodePolicy
+				envelope.Error = &ops.ErrorInfo{
+					Type:    "cleanup_failures",
+					Message: fmt.Sprintf("ops cleanup failed for %d resource(s)", result.Summary.Failed),
+				}
+			}
+			if err := ops.WriteEnvelope(cmd.OutOrStdout(), opsEnvelopeOutputFormat(runtime), envelope); err != nil {
+				return writeOpsError(cmd, runtime, ops.CommandCleanup, ops.WrapExit(ops.ExitCodeUnknown, fmt.Errorf("write success envelope: %w", err)))
+			}
+			if !envelope.Success {
+				return ops.WrapExit(envelope.ExitCode, errors.New(envelope.Error.Message))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&ledgerPath, "ledger-path", "", "Path to resource ledger JSON file")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Execute cleanup actions (default mode is dry-run classification only)")
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name for cleanup apply mode")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version for cleanup apply mode")
+	return cmd
+}
+
 func ensureOpsOutput(runtime Runtime, command string) error {
 	format := strings.ToLower(strings.TrimSpace(selectedOutputFormat(runtime)))
 	switch command {
@@ -181,6 +260,38 @@ func resolveStatePath(path string) (string, error) {
 		return path, nil
 	}
 	return ops.DefaultStatePath()
+}
+
+func resolveResourceLedgerPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path != "" {
+		return path, nil
+	}
+	return ops.DefaultResourceLedgerPath()
+}
+
+func resolveOpsCleanupProfileAndVersion(runtime Runtime, profile string, version string) (*ProfileCredentials, string, error) {
+	resolvedProfile := strings.TrimSpace(profile)
+	if resolvedProfile == "" {
+		resolvedProfile = runtime.ProfileName()
+	}
+	if resolvedProfile == "" {
+		return nil, "", errors.New("profile is required for ops cleanup apply mode (--profile or global --profile)")
+	}
+
+	creds, err := opsLoadProfileCredentials(resolvedProfile)
+	if err != nil {
+		return nil, "", err
+	}
+
+	resolvedVersion := strings.TrimSpace(version)
+	if resolvedVersion == "" {
+		resolvedVersion = strings.TrimSpace(creds.Profile.GraphVersion)
+	}
+	if resolvedVersion == "" {
+		return nil, "", errors.New("graph version is required for ops cleanup apply mode")
+	}
+	return creds, resolvedVersion, nil
 }
 
 func writeOpsError(cmd *cobra.Command, runtime Runtime, command string, err error) error {

@@ -14,6 +14,7 @@ const (
 	ContractVersion = "ops.v1"
 	CommandInit     = "meta ops init"
 	CommandRun      = "meta ops run"
+	CommandCleanup  = "meta ops cleanup"
 )
 
 const ReportSchemaVersion = 1

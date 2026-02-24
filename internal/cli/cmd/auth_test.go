@@ -301,6 +301,65 @@ func TestAuthLoginRunsAutoCallbackAndPersistsProfile(t *testing.T) {
 	}
 }
 
+func TestAuthLoginUsesRedirectURIOverrideForOAuthExchange(t *testing.T) {
+	service := &stubAuthService{}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
+
+	capturedRedirectURI := ""
+	originalBuild := buildAuthOAuthURLWithState
+	t.Cleanup(func() {
+		buildAuthOAuthURLWithState = originalBuild
+	})
+	buildAuthOAuthURLWithState = func(_ string, redirectURI string, _ []string, _ string, _ string, _ string) (string, error) {
+		capturedRedirectURI = redirectURI
+		return "https://example.com/oauth", nil
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd := NewAuthCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{
+		"login",
+		"--app-id", "app_1",
+		"--app-secret", "secret_1",
+		"--scopes", "ads_read,pages_show_list",
+		"--listen", "127.0.0.1:5555",
+		"--redirect-uri", "https://auth.example.com/oauth/callback",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute login with redirect override: %v", err)
+	}
+
+	if capturedRedirectURI != "https://auth.example.com/oauth/callback" {
+		t.Fatalf("unexpected oauth redirect uri passed to auth URL builder: %q", capturedRedirectURI)
+	}
+	if service.exchangeOAuthCodeInput == nil {
+		t.Fatal("expected OAuth exchange call")
+	}
+	if service.exchangeOAuthCodeInput.RedirectURI != "https://auth.example.com/oauth/callback" {
+		t.Fatalf("unexpected exchange redirect uri: %q", service.exchangeOAuthCodeInput.RedirectURI)
+	}
+
+	envelope := decodeEnvelope(t, stdout.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta auth login")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["redirect_uri"]; got != "https://auth.example.com/oauth/callback" {
+		t.Fatalf("unexpected output redirect_uri %v", got)
+	}
+	if !strings.Contains(stderr.String(), "https://example.com/oauth") {
+		t.Fatalf("expected auth url in stderr, got %q", stderr.String())
+	}
+}
+
 func TestAuthSetupDiscoversAndBindsDefaults(t *testing.T) {
 	service := &stubAuthService{
 		discoveredPages: []auth.DiscoveredPage{{PageID: "p_1", Name: "Page One", IGBusinessAccountID: "ig_1"}},
@@ -391,6 +450,33 @@ func TestAuthSetupPropagatesServiceErrors(t *testing.T) {
 		t.Fatal("expected setup error")
 	}
 	if !strings.Contains(err.Error(), "exchange failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAuthLoginFailsWithInvalidRedirectURIOverride(t *testing.T) {
+	service := &stubAuthService{}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
+
+	cmd := NewAuthCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"login",
+		"--app-id", "app_1",
+		"--app-secret", "secret_1",
+		"--scopes", "ads_read",
+		"--redirect-uri", "/not-absolute",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid redirect-uri error")
+	}
+	if !strings.Contains(err.Error(), "invalid --redirect-uri") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

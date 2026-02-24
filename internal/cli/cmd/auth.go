@@ -58,6 +58,7 @@ type oauthLoginInput struct {
 	AppSecret    string
 	Scopes       []string
 	ListenAddr   string
+	RedirectURI  string
 	Timeout      time.Duration
 	OpenBrowser  bool
 	Version      string
@@ -161,6 +162,7 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 		profile        string
 		appID          string
 		appSecret      string
+		redirectURI    string
 		mode           string
 		scopePack      string
 		listenAddr     string
@@ -199,6 +201,7 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 				AppSecret:    appSecret,
 				Scopes:       scopes,
 				ListenAddr:   listenAddr,
+				RedirectURI:  redirectURI,
 				Timeout:      timeout,
 				OpenBrowser:  openBrowser,
 				Version:      config.DefaultGraphVersion,
@@ -262,6 +265,7 @@ func newAuthSetupCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&mode, "mode", auth.AuthModeBoth, "Auth mode: both|facebook|instagram")
 	cmd.Flags().StringVar(&scopePack, "scope-pack", "solo_smb", "Scope pack: solo_smb|ads_only|ig_publish")
 	cmd.Flags().StringVar(&listenAddr, "listen", defaultAuthListenAddr, "OAuth callback listener host:port")
+	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI override (recommended for https tunnel domains)")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")
 	cmd.Flags().BoolVar(&openBrowser, "open-browser", true, "Open browser automatically")
 	cmd.Flags().StringVar(&pageID, "page-id", "", "Optional page id binding")
@@ -279,6 +283,7 @@ func newAuthLoginCommand(runtime Runtime) *cobra.Command {
 		appSecret   string
 		scopesRaw   string
 		listenAddr  string
+		redirectURI string
 		timeout     time.Duration
 		openBrowser bool
 	)
@@ -306,6 +311,7 @@ func newAuthLoginCommand(runtime Runtime) *cobra.Command {
 				AppSecret:    appSecret,
 				Scopes:       scopes,
 				ListenAddr:   listenAddr,
+				RedirectURI:  redirectURI,
 				Timeout:      timeout,
 				OpenBrowser:  openBrowser,
 				Version:      config.DefaultGraphVersion,
@@ -331,6 +337,7 @@ func newAuthLoginCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&appSecret, "app-secret", "", "Meta App Secret")
 	cmd.Flags().StringVar(&scopesRaw, "scopes", "", "Comma-separated OAuth scopes")
 	cmd.Flags().StringVar(&listenAddr, "listen", defaultAuthListenAddr, "OAuth callback listener host:port")
+	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI override (recommended for https tunnel domains)")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")
 	cmd.Flags().BoolVar(&openBrowser, "open-browser", true, "Open browser automatically")
 	mustMarkFlagRequired(cmd, "app-id")
@@ -769,7 +776,7 @@ func runOAuthAutoLogin(cmd *cobra.Command, svc authCLIService, input oauthLoginI
 	if input.Timeout <= 0 {
 		return oauthLoginResult{}, errors.New("timeout must be greater than zero")
 	}
-	redirectURI, err := localCallbackRedirectURI(input.ListenAddr)
+	listenerURI, err := localCallbackRedirectURI(input.ListenAddr)
 	if err != nil {
 		return oauthLoginResult{}, err
 	}
@@ -782,14 +789,22 @@ func runOAuthAutoLogin(cmd *cobra.Command, svc authCLIService, input oauthLoginI
 	if err != nil {
 		return oauthLoginResult{}, err
 	}
-	listener, err := newAuthOAuthListener(redirectURI, state)
+	listener, err := newAuthOAuthListener(listenerURI, state)
 	if err != nil {
 		return oauthLoginResult{}, err
 	}
 	defer listener.Close(context.Background())
 
-	resolvedRedirectURI := listener.RedirectURI()
-	authURL, err := buildAuthOAuthURLWithState(input.AppID, resolvedRedirectURI, input.Scopes, challenge, state, input.Version)
+	localResolvedRedirectURI := listener.RedirectURI()
+	oauthRedirectURI := strings.TrimSpace(input.RedirectURI)
+	if oauthRedirectURI == "" {
+		oauthRedirectURI = localResolvedRedirectURI
+	}
+	if err := validateOAuthRedirectURI(oauthRedirectURI); err != nil {
+		return oauthLoginResult{}, err
+	}
+
+	authURL, err := buildAuthOAuthURLWithState(input.AppID, oauthRedirectURI, input.Scopes, challenge, state, input.Version)
 	if err != nil {
 		return oauthLoginResult{}, err
 	}
@@ -807,7 +822,7 @@ func runOAuthAutoLogin(cmd *cobra.Command, svc authCLIService, input oauthLoginI
 
 	shortToken, err := svc.ExchangeOAuthCode(cmd.Context(), auth.ExchangeCodeInput{
 		AppID:        input.AppID,
-		RedirectURI:  resolvedRedirectURI,
+		RedirectURI:  oauthRedirectURI,
 		Code:         code,
 		CodeVerifier: verifier,
 		Version:      input.Version,
@@ -866,7 +881,7 @@ func runOAuthAutoLogin(cmd *cobra.Command, svc authCLIService, input oauthLoginI
 
 	return oauthLoginResult{
 		AuthURL:       authURL,
-		RedirectURI:   resolvedRedirectURI,
+		RedirectURI:   oauthRedirectURI,
 		ExpiresAt:     expiresAt,
 		Scopes:        metadata.Scopes,
 		TokenType:     auth.TokenTypeUser,
@@ -922,6 +937,20 @@ func localCallbackRedirectURI(listenAddr string) (string, error) {
 		Path:   defaultAuthCallbackPath,
 	}
 	return uri.String(), nil
+}
+
+func validateOAuthRedirectURI(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid --redirect-uri %q: %w", raw, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("invalid --redirect-uri %q: expected absolute URI", raw)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid --redirect-uri %q: scheme must be http or https", raw)
+	}
+	return nil
 }
 
 func authProviderFromMode(mode string) string {

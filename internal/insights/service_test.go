@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,5 +91,66 @@ func TestRunAsyncInsights(t *testing.T) {
 	}
 	if len(result.Rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(result.Rows))
+	}
+}
+
+func TestRunSyncInsightsIncludesFieldsFilter(t *testing.T) {
+	t.Parallel()
+
+	expectedFields := "spend,impressions,ctr"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("fields"); got != expectedFields {
+			t.Fatalf("unexpected fields query: got=%q want=%q", got, expectedFields)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"spend": "10.00", "impressions": "100", "ctr": "1.0"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	svc := New(client)
+	result, err := svc.Run(context.Background(), "v25.0", "token", "", RunOptions{
+		AccountID:  "1",
+		Level:      "campaign",
+		DatePreset: "last_7d",
+		Fields:     []string{"spend", "impressions", "ctr"},
+	})
+	if err != nil {
+		t.Fatalf("run sync insights with fields: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(result.Rows))
+	}
+}
+
+func TestRunRejectsBlankFieldsFilter(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	svc := New(client)
+	_, err := svc.Run(context.Background(), "v25.0", "token", "", RunOptions{
+		AccountID:  "1",
+		Level:      "campaign",
+		DatePreset: "last_7d",
+		Fields:     []string{"spend", "  "},
+	})
+	if err == nil {
+		t.Fatal("expected error for blank fields filter")
+	}
+	if !strings.Contains(err.Error(), "blank entries") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("expected zero network calls, got %d", got)
 	}
 }

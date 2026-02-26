@@ -7,6 +7,7 @@ Meta Marketing CLI is a developer-first, fail-closed command-line interface for 
 - Keychain-only secret storage (no env/plaintext fallback)
 - Fail-closed profile preflight before operational commands
 - Direct Graph API access (`api get/post/delete/batch`)
+- Insights account discovery and quality metric packs (`insights accounts list`, `insights run --metric-pack quality`)
 - Campaign, ad set, ad, creative, audience, and catalog workflows
 - Budget mutation guardrails for spend-changing writes
 - Instagram media upload, status, publish, and schedule lifecycle
@@ -110,6 +111,27 @@ Official docs:
   --json '{"creative":{"creative_id":"<CREATIVE_ID>"}}' \
   --schema-dir ./schema-packs
 ```
+
+## Insights Reporting
+```bash
+# Discover active ad accounts first
+./meta --profile prod insights accounts list \
+  --active-only \
+  --output table
+
+# Run campaign insights with expanded quality metrics
+./meta --profile prod insights run \
+  --account-id <AD_ACCOUNT_ID> \
+  --date-preset last_7d \
+  --level campaign \
+  --metric-pack quality \
+  --format jsonl
+```
+
+Notes:
+- `insights run` still fails closed when `--account-id` is missing.
+- `--metric-pack basic` keeps the previous default behavior.
+- `--metric-pack quality` requests expanded fields (CTR, CPC, CPM, reach/frequency, actions, and related cost metrics).
 
 ## IG Publication
 ```bash
@@ -224,7 +246,7 @@ Auth metadata fields required on every profile in schema v2:
 |---|---|---|
 | `auth` | Authentication and profile/token lifecycle | `add system-user`, `setup`, `login`, `discover`, `page-token`, `app-token set`, `validate`, `rotate`, `debug-token`, `list` |
 | `api` | Direct Graph API access | `get`, `post`, `delete`, `batch` |
-| `insights` | Reporting queries and export | `run` |
+| `insights` | Reporting queries and export | `accounts list`, `run` |
 | `lint` | Request lint against schema packs | `request` |
 | `schema` | Local schema pack management | `list`, `sync` |
 | `changelog` | Version/change checks | `check` |

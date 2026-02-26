@@ -17,21 +17,22 @@ type RunOptions struct {
 	DatePreset  string
 	Breakdowns  []string
 	Attribution []string
+	Fields      []string
 	Limit       int
 	Async       bool
 }
 
 type Result struct {
-	Rows      []map[string]any          `json:"rows"`
-	Pagination *graph.PaginationResult `json:"pagination,omitempty"`
+	Rows        []map[string]any        `json:"rows"`
+	Pagination  *graph.PaginationResult `json:"pagination,omitempty"`
 	ReportRunID string                  `json:"report_run_id,omitempty"`
 }
 
 type Service struct {
-	Client         *graph.Client
-	PollInterval   time.Duration
+	Client          *graph.Client
+	PollInterval    time.Duration
 	MaxPollAttempts int
-	Sleep          func(time.Duration)
+	Sleep           func(time.Duration)
 }
 
 func New(client *graph.Client) *Service {
@@ -65,6 +66,13 @@ func (s *Service) Run(ctx context.Context, version string, token string, appSecr
 	}
 	if len(options.Attribution) > 0 {
 		params["action_attribution_windows"] = strings.Join(options.Attribution, ",")
+	}
+	if len(options.Fields) > 0 {
+		normalizedFields, err := normalizeFields(options.Fields)
+		if err != nil {
+			return nil, err
+		}
+		params["fields"] = strings.Join(normalizedFields, ",")
 	}
 	if options.Limit > 0 {
 		params["limit"] = strconv.Itoa(options.Limit)
@@ -170,4 +178,24 @@ func (s *Service) fetchInsights(ctx context.Context, version string, path string
 func isCompleted(status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
 	return status == "job completed" || status == "completed"
+}
+
+func normalizeFields(fields []string) ([]string, error) {
+	normalized := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		trimmed := strings.TrimSpace(field)
+		if trimmed == "" {
+			return nil, errors.New("insights fields contains blank entries")
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil, errors.New("insights fields are required when fields filter is set")
+	}
+	return normalized, nil
 }

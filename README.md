@@ -150,13 +150,13 @@ Notes:
   --idempotency-key publish-feed-001
 ```
 
-## Marketing Write Workflows
-Primary write command families:
+## Marketing Workflows
+Primary command families:
 - `campaign`: `create`, `update`, `pause`, `resume`, `clone`
 - `adset`: `create`, `update`, `pause`, `resume`
 - `ad`: `create`, `update`, `pause`, `resume`, `clone`
 - `creative`: `upload`, `create`
-- `audience`: `create`, `update`, `delete`
+- `audience`: `create`, `update`, `delete`, `list`, `get`
 - `catalog`: `upload-items`, `batch-items`
 
 Budget mutation guardrail example:
@@ -165,6 +165,25 @@ Budget mutation guardrail example:
   --campaign-id <CAMPAIGN_ID> \
   --params "daily_budget=5000" \
   --confirm-budget-change
+```
+
+Audience read examples:
+```bash
+# List audiences with default fields: id,name,subtype,time_updated,retention_days
+./meta --profile prod audience list \
+  --account-id <AD_ACCOUNT_ID>
+
+# List audiences with selected fields and pagination controls
+./meta --profile prod audience list \
+  --account-id <AD_ACCOUNT_ID> \
+  --fields id,name,subtype,time_updated \
+  --limit 100 \
+  --follow-next
+
+# Get one audience by ID
+./meta --profile prod audience get \
+  --audience-id <AUDIENCE_ID> \
+  --fields id,name,subtype,time_updated,retention_days
 ```
 
 ## Instagram Publishing + Plugin Runtime
@@ -259,7 +278,7 @@ Auth metadata fields required on every profile in schema v2:
 | `adset` | Ad set lifecycle | `create`, `update`, `pause`, `resume` |
 | `ad` | Ad lifecycle | `create`, `update`, `pause`, `resume`, `clone` |
 | `creative` | Creative assets | `upload`, `create` |
-| `audience` | Audience lifecycle | `create`, `update`, `delete` |
+| `audience` | Audience lifecycle | `create`, `update`, `delete`, `list`, `get` |
 | `catalog` | Catalog item ingestion/mutation | `upload-items`, `batch-items` |
 
 ## Instagram and Adjacent Product Namespaces

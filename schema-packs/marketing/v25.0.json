@@ -6,7 +6,7 @@
     "adset": ["id", "name", "status", "campaign_id", "billing_event", "optimization_goal"],
     "ad": ["id", "name", "status", "adset_id", "creative"],
     "creative": ["id", "name", "object_story_id", "object_story_spec", "asset_feed_spec"],
-    "audience": ["id", "name", "subtype", "description", "retention_days"],
+    "audience": ["id", "name", "subtype", "description", "time_updated", "retention_days"],
     "catalog": ["id", "name", "vertical", "business"],
     "insights": ["date_start", "date_stop", "impressions", "clicks", "spend", "reach", "actions"]
   },

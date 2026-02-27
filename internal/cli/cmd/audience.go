@@ -39,6 +39,21 @@ var (
 	}
 )
 
+type audienceListCommandResult struct {
+	Status      string                  `json:"status"`
+	Operation   string                  `json:"operation"`
+	RequestPath string                  `json:"request_path"`
+	Audiences   []map[string]any        `json:"audiences"`
+	Paging      *graph.PaginationResult `json:"paging,omitempty"`
+}
+
+type audienceGetCommandResult struct {
+	Status      string         `json:"status"`
+	Operation   string         `json:"operation"`
+	RequestPath string         `json:"request_path"`
+	Audience    map[string]any `json:"audience"`
+}
+
 func NewAudienceCommand(runtime Runtime) *cobra.Command {
 	audienceCmd := &cobra.Command{
 		Use:   "audience",
@@ -50,6 +65,8 @@ func NewAudienceCommand(runtime Runtime) *cobra.Command {
 	audienceCmd.AddCommand(newAudienceCreateCommand(runtime))
 	audienceCmd.AddCommand(newAudienceUpdateCommand(runtime))
 	audienceCmd.AddCommand(newAudienceDeleteCommand(runtime))
+	audienceCmd.AddCommand(newAudienceListCommand(runtime))
+	audienceCmd.AddCommand(newAudienceGetCommand(runtime))
 	return audienceCmd
 }
 
@@ -258,6 +275,136 @@ func newAudienceDeleteCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&audienceID, "audience-id", "", "Audience id")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
+	return cmd
+}
+
+func newAudienceListCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile      string
+		version      string
+		accountID    string
+		fieldsRaw    string
+		limit        int
+		followNext   bool
+		domainPolicy string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List custom audiences",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta audience list", err)
+			}
+
+			creds, resolvedVersion, err := resolveAudienceProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta audience list", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta audience list", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
+			}
+
+			result, err := audienceNewService(audienceNewGraphClient()).List(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AudienceListInput{
+				AccountID:  accountID,
+				Fields:     csvToSlice(fieldsRaw),
+				Limit:      limit,
+				FollowNext: followNext,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta audience list", err)
+			}
+
+			payload := audienceListCommandResult{
+				Status:      "ok",
+				Operation:   result.Operation,
+				RequestPath: result.RequestPath,
+				Audiences:   result.Audiences,
+				Paging:      result.Paging,
+			}
+			return writeSuccess(cmd, runtime, "meta audience list", map[string]any{
+				"status":       payload.Status,
+				"operation":    payload.Operation,
+				"request_path": payload.RequestPath,
+				"audiences":    payload.Audiences,
+				"paging":       payload.Paging,
+			}, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to audience read fields)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of audiences to return")
+	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
+	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
+	return cmd
+}
+
+func newAudienceGetCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile      string
+		version      string
+		audienceID   string
+		fieldsRaw    string
+		domainPolicy string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "get",
+		Short: "Get a custom audience",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateDomainGatePolicy(domainPolicy); err != nil {
+				return writeCommandError(cmd, runtime, "meta audience get", err)
+			}
+
+			creds, resolvedVersion, err := resolveAudienceProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta audience get", err)
+			}
+			proceed, err := enforceMarketingDomainGate(cmd, runtime, "meta audience get", domainPolicy, creds.Profile.Domain)
+			if err != nil {
+				return err
+			}
+			if !proceed {
+				return nil
+			}
+
+			result, err := audienceNewService(audienceNewGraphClient()).Get(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AudienceGetInput{
+				AudienceID: audienceID,
+				Fields:     csvToSlice(fieldsRaw),
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta audience get", err)
+			}
+
+			payload := audienceGetCommandResult{
+				Status:      "ok",
+				Operation:   result.Operation,
+				RequestPath: result.RequestPath,
+				Audience:    result.Audience,
+			}
+			return writeSuccess(cmd, runtime, "meta audience get", map[string]any{
+				"status":       payload.Status,
+				"operation":    payload.Operation,
+				"request_path": payload.RequestPath,
+				"audience":     payload.Audience,
+			}, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&audienceID, "audience-id", "", "Audience id")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to audience read fields)")
 	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }

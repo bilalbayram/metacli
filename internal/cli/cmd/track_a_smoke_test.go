@@ -142,6 +142,28 @@ func TestTrackAWorkflowSmokeCLICommands(t *testing.T) {
 			},
 		},
 		{
+			method:   http.MethodGet,
+			path:     "/v25.0/act_1234/customaudiences",
+			status:   http.StatusOK,
+			response: `{"data":[{"id":"aud_5001","name":"TrackA Audience","subtype":"CUSTOM"}]}`,
+			assert: func(t *testing.T, req *http.Request) {
+				if got := req.URL.Query().Get("fields"); got != "id,name,subtype,time_updated,retention_days" {
+					t.Fatalf("unexpected audience list fields %q", got)
+				}
+			},
+		},
+		{
+			method:   http.MethodGet,
+			path:     "/v25.0/aud_5001",
+			status:   http.StatusOK,
+			response: `{"id":"aud_5001","name":"TrackA Audience","subtype":"CUSTOM"}`,
+			assert: func(t *testing.T, req *http.Request) {
+				if got := req.URL.Query().Get("fields"); got != "id,name,subtype,time_updated,retention_days" {
+					t.Fatalf("unexpected audience get fields %q", got)
+				}
+			},
+		},
+		{
 			method: http.MethodPost,
 			path:   "/v25.0/cat_6001/items_batch",
 			status: http.StatusOK,
@@ -283,6 +305,29 @@ func TestTrackAWorkflowSmokeCLICommands(t *testing.T) {
 	audienceID := trackASmokeDataString(t, audienceEnvelope, "audience_id")
 	if audienceID != "aud_5001" {
 		t.Fatalf("unexpected audience id %q", audienceID)
+	}
+
+	audienceListEnvelope := runTrackASmokeSuccessCommand(t, NewAudienceCommand(testRuntime("prod")), []string{
+		"list",
+		"--account-id", "1234",
+	}, "meta audience list")
+	audienceListData := trackASmokeEnvelopeData(t, audienceListEnvelope)
+	audienceItems, ok := audienceListData["audiences"].([]any)
+	if !ok || len(audienceItems) != 1 {
+		t.Fatalf("expected one audience list item, got %#v", audienceListData["audiences"])
+	}
+
+	audienceGetEnvelope := runTrackASmokeSuccessCommand(t, NewAudienceCommand(testRuntime("prod")), []string{
+		"get",
+		"--audience-id", audienceID,
+	}, "meta audience get")
+	audienceGetData := trackASmokeEnvelopeData(t, audienceGetEnvelope)
+	audienceObject, ok := audienceGetData["audience"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected audience object, got %T", audienceGetData["audience"])
+	}
+	if got := audienceObject["id"]; got != audienceID {
+		t.Fatalf("unexpected audience get id %v", got)
 	}
 
 	catalogUploadEnvelope := runTrackASmokeSuccessCommand(t, NewCatalogCommand(testRuntime("prod")), []string{
@@ -491,7 +536,7 @@ func writeTrackASmokeSchemaPack(t *testing.T) string {
     "adset":["id","name","status","campaign_id","billing_event","optimization_goal","daily_budget","lifetime_budget"],
     "creative":["id","name","object_story_id","object_story_spec","asset_feed_spec"],
     "ad":["id","name","status","adset_id","creative"],
-    "audience":["id","name","subtype","description","retention_days"]
+    "audience":["id","name","subtype","description","time_updated","retention_days"]
   },
   "endpoint_params":{
     "campaigns.post":["name","status","objective","daily_budget","lifetime_budget"],

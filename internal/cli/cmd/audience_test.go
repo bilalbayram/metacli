@@ -18,7 +18,7 @@ func TestNewAudienceCommandIncludesLifecycleSubcommands(t *testing.T) {
 
 	cmd := NewAudienceCommand(Runtime{})
 
-	for _, name := range []string{"create", "update", "delete"} {
+	for _, name := range []string{"create", "update", "delete", "list", "get"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s subcommand: %v", name, err)
@@ -438,6 +438,377 @@ func TestAudienceDeleteFailsWithoutAudienceID(t *testing.T) {
 	}
 }
 
+func TestAudienceListExecutesRead(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[
+			{"id":"aud_2","name":"Second"},
+			{"id":"aud_1","name":"First"}
+		]}`,
+	}
+	useAudienceDependencies(t,
+		func(profile string) (*ProfileCredentials, error) {
+			if profile != "prod" {
+				t.Fatalf("unexpected profile %q", profile)
+			}
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "1234",
+		"--fields", "id,name",
+		"--limit", "10",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience list: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_1234/customaudiences" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,name" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience list")
+	if _, exists := envelope["paging"]; exists {
+		t.Fatalf("expected top-level paging to be omitted, got %v", envelope["paging"])
+	}
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "ok" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["operation"]; got != "list" {
+		t.Fatalf("unexpected operation %v", got)
+	}
+	if got := data["request_path"]; got != "act_1234/customaudiences" {
+		t.Fatalf("unexpected request_path %v", got)
+	}
+	audiences, ok := data["audiences"].([]any)
+	if !ok || len(audiences) != 2 {
+		t.Fatalf("expected two audiences, got %#v", data["audiences"])
+	}
+	first, ok := audiences[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first audience object, got %T", audiences[0])
+	}
+	if got := first["id"]; got != "aud_1" {
+		t.Fatalf("expected sorted first id aud_1, got %v", got)
+	}
+	paging, ok := data["paging"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data.paging object, got %T", data["paging"])
+	}
+	if got := paging["pages_fetched"]; got != float64(1) {
+		t.Fatalf("unexpected pages_fetched %v", got)
+	}
+	if got := paging["items_fetched"]; got != float64(2) {
+		t.Fatalf("unexpected items_fetched %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAudienceGetExecutesRead(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"id":"aud_999","name":"Core Audience","subtype":"CUSTOM"}`,
+	}
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"get",
+		"--audience-id", "aud_999",
+		"--fields", "id,name,subtype",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience get: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/aud_999" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,name,subtype" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience get")
+	if _, exists := envelope["paging"]; exists {
+		t.Fatalf("expected top-level paging to be omitted, got %v", envelope["paging"])
+	}
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "ok" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["operation"]; got != "get" {
+		t.Fatalf("unexpected operation %v", got)
+	}
+	if got := data["request_path"]; got != "aud_999" {
+		t.Fatalf("unexpected request_path %v", got)
+	}
+	audience, ok := data["audience"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected audience object, got %T", data["audience"])
+	}
+	if got := audience["id"]; got != "aud_999" {
+		t.Fatalf("unexpected audience id %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAudienceListFailsWithoutAccountID(t *testing.T) {
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"list"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "account id is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience list" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
+func TestAudienceGetFailsWithoutAudienceID(t *testing.T) {
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"get"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "audience id is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience get" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
+func TestAudienceListFailsDomainGateWhenPolicyStrict(t *testing.T) {
+	wasCalled := false
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       "instagram",
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"list", "--account-id", "1234"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), `requires profile domain "marketing"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when domain gate blocks command")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience list" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+	if got := envelope["success"]; got != false {
+		t.Fatalf("expected success=false, got %v", got)
+	}
+}
+
+func TestAudienceListSkipsDomainGateWhenPolicySkip(t *testing.T) {
+	wasCalled := false
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       "instagram",
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"list", "--account-id", "1234", "--domain-policy", "skip"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience list with skip policy: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute when domain gate skips command")
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience list")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected domain gate payload, got %T", envelope["data"])
+	}
+	if got := data["status"]; got != "skipped" {
+		t.Fatalf("unexpected status %v", got)
+	}
+	if got := data["policy"]; got != "skip" {
+		t.Fatalf("unexpected policy %v", got)
+	}
+}
+
 func useAudienceDependencies(t *testing.T, loadFn func(string) (*ProfileCredentials, error), clientFn func() *graph.Client) {
 	t.Helper()
 	configureTestResourceLedgerPath(t)
@@ -464,7 +835,7 @@ func writeAudienceSchemaPack(t *testing.T) string {
 	pack := `{
   "domain":"marketing",
   "version":"v25.0",
-  "entities":{"audience":["id","name","subtype","description","retention_days"]},
+  "entities":{"audience":["id","name","subtype","description","time_updated","retention_days"]},
   "endpoint_params":{"customaudiences.post":["name","subtype","description","customer_file_source","rule","retention_days","prefill"]},
   "deprecated_params":{"customaudiences.post":["legacy_param"]}
 }`

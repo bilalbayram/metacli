@@ -3,12 +3,15 @@ package marketing
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bilalbayram/metacli/internal/graph"
 )
@@ -196,6 +199,179 @@ func TestCreativeCreateFailsWhenResponseMissingID(t *testing.T) {
 		t.Fatal("expected create error")
 	}
 	if !strings.Contains(err.Error(), "did not include id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreativeUploadVideoWaitReadyPollsUntilReady(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "video.mp4")
+	fileBytes := []byte("video-bytes-123")
+	if err := os.WriteFile(filePath, fileBytes, 0o644); err != nil {
+		t.Fatalf("write video file: %v", err)
+	}
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected upload method %q", r.Method)
+			}
+			if r.URL.Path != "/v25.0/act_1234/advideos" {
+				t.Fatalf("unexpected upload path %q", r.URL.Path)
+			}
+			if err := r.ParseMultipartForm(4 << 20); err != nil {
+				t.Fatalf("parse upload multipart form: %v", err)
+			}
+			if got := r.FormValue("name"); got != "video.mp4" {
+				t.Fatalf("unexpected name %q", got)
+			}
+			file, header, err := r.FormFile("source")
+			if err != nil {
+				t.Fatalf("read source form file: %v", err)
+			}
+			defer file.Close()
+			if header.Filename != "video.mp4" {
+				t.Fatalf("unexpected uploaded file name %q", header.Filename)
+			}
+			payload, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("read uploaded payload: %v", err)
+			}
+			if string(payload) != string(fileBytes) {
+				t.Fatalf("unexpected uploaded payload %q", string(payload))
+			}
+			_, _ = w.Write([]byte(`{"id":"vid_1","uploading_phase":{"status":"complete"}}`))
+		case 2:
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected status method %q", r.Method)
+			}
+			if r.URL.Path != "/v25.0/vid_1" {
+				t.Fatalf("unexpected status path %q", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("fields"); got != "id,status" {
+				t.Fatalf("unexpected status fields %q", got)
+			}
+			_, _ = w.Write([]byte(`{"id":"vid_1","status":{"processing_phase":{"status":"IN_PROGRESS"}}}`))
+		case 3:
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected status method %q", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"id":"vid_1","status":{"video_status":"ready","processing_phase":{"status":"complete"},"publishing_phase":{"status":"complete"}}}`))
+		default:
+			t.Fatalf("unexpected request count %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := NewCreativeService(client)
+	result, err := service.UploadVideo(context.Background(), "v25.0", "token-1", "secret-1", CreativeVideoUploadInput{
+		AccountID:    "act_1234",
+		FilePath:     filePath,
+		FileName:     "video.mp4",
+		WaitReady:    true,
+		Timeout:      100 * time.Millisecond,
+		PollInterval: 1 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("upload video with wait ready: %v", err)
+	}
+
+	if requestCount != 3 {
+		t.Fatalf("expected three requests, got %d", requestCount)
+	}
+	if result.Operation != "upload-video" {
+		t.Fatalf("unexpected operation %q", result.Operation)
+	}
+	if result.VideoID != "vid_1" {
+		t.Fatalf("unexpected video id %q", result.VideoID)
+	}
+	if !result.Ready {
+		t.Fatal("expected ready=true")
+	}
+	if result.FinalStatus != "complete" {
+		t.Fatalf("unexpected final status %q", result.FinalStatus)
+	}
+}
+
+func TestCreativeUploadVideoWaitReadyTimesOut(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "video.mp4")
+	if err := os.WriteFile(filePath, []byte("video-bytes"), 0o644); err != nil {
+		t.Fatalf("write video file: %v", err)
+	}
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_, _ = w.Write([]byte(`{"id":"vid_timeout"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"vid_timeout","processing_phase":{"status":"IN_PROGRESS"}}`))
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := NewCreativeService(client)
+	_, err := service.UploadVideo(context.Background(), "v25.0", "token-1", "secret-1", CreativeVideoUploadInput{
+		AccountID:    "1234",
+		FilePath:     filePath,
+		WaitReady:    true,
+		Timeout:      2 * time.Millisecond,
+		PollInterval: 1 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCreativeUploadVideoWaitReadyFailsOnTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "video.mp4")
+	if err := os.WriteFile(filePath, []byte("video-bytes"), 0o644); err != nil {
+		t.Fatalf("write video file: %v", err)
+	}
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_, _ = w.Write([]byte(`{"id":"vid_fail"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"vid_fail","processing_phase":{"status":"ERROR"}}`))
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := NewCreativeService(client)
+	_, err := service.UploadVideo(context.Background(), "v25.0", "token-1", "secret-1", CreativeVideoUploadInput{
+		AccountID:    "1234",
+		FilePath:     filePath,
+		WaitReady:    true,
+		Timeout:      100 * time.Millisecond,
+		PollInterval: 1 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected terminal status error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

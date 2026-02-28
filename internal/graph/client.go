@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"path"
@@ -38,8 +39,15 @@ type Request struct {
 	Version     string
 	Query       map[string]string
 	Form        map[string]string
+	Multipart   *MultipartFile
 	AccessToken string
 	AppSecret   string
+}
+
+type MultipartFile struct {
+	FieldName string
+	FileName  string
+	FileBytes []byte
 }
 
 type Response struct {
@@ -128,6 +136,7 @@ func (c *Client) doOnce(ctx context.Context, method string, version string, req 
 	}
 
 	bodyReader := io.Reader(nil)
+	contentType := ""
 	if method == http.MethodGet || method == http.MethodDelete {
 		if req.AccessToken != "" {
 			query.Set("access_token", req.AccessToken)
@@ -140,21 +149,12 @@ func (c *Client) doOnce(ctx context.Context, method string, version string, req 
 			query.Set("appsecret_proof", proof)
 		}
 	} else {
-		form := url.Values{}
-		for key, value := range req.Form {
-			form.Set(key, value)
+		requestBody, requestContentType, err := buildRequestBody(req)
+		if err != nil {
+			return nil, err
 		}
-		if req.AccessToken != "" {
-			form.Set("access_token", req.AccessToken)
-		}
-		if req.AccessToken != "" && req.AppSecret != "" {
-			proof, err := auth.AppSecretProof(req.AccessToken, req.AppSecret)
-			if err != nil {
-				return nil, err
-			}
-			form.Set("appsecret_proof", proof)
-		}
-		bodyReader = bytes.NewBufferString(form.Encode())
+		bodyReader = bytes.NewReader(requestBody)
+		contentType = requestContentType
 	}
 	endpoint.RawQuery = query.Encode()
 
@@ -165,7 +165,7 @@ func (c *Client) doOnce(ctx context.Context, method string, version string, req 
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", c.UserAgent)
 	if method != http.MethodGet && method != http.MethodDelete {
-		httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		httpReq.Header.Set("Content-Type", contentType)
 	}
 
 	httpRes, err := c.HTTP.Do(httpReq)
@@ -206,6 +206,71 @@ func (c *Client) doOnce(ctx context.Context, method string, version string, req 
 		Headers:    httpRes.Header.Clone(),
 		RateLimit:  parseRateLimit(httpRes.Header),
 	}, nil
+}
+
+func buildRequestBody(req Request) ([]byte, string, error) {
+	if req.Multipart == nil {
+		form := url.Values{}
+		for key, value := range req.Form {
+			form.Set(key, value)
+		}
+		if req.AccessToken != "" {
+			form.Set("access_token", req.AccessToken)
+		}
+		if req.AccessToken != "" && req.AppSecret != "" {
+			proof, err := auth.AppSecretProof(req.AccessToken, req.AppSecret)
+			if err != nil {
+				return nil, "", err
+			}
+			form.Set("appsecret_proof", proof)
+		}
+		return []byte(form.Encode()), "application/x-www-form-urlencoded", nil
+	}
+
+	fieldName := strings.TrimSpace(req.Multipart.FieldName)
+	if fieldName == "" {
+		return nil, "", errors.New("multipart field name is required")
+	}
+	fileName := strings.TrimSpace(req.Multipart.FileName)
+	if fileName == "" {
+		return nil, "", errors.New("multipart file name is required")
+	}
+
+	buffer := &bytes.Buffer{}
+	writer := multipart.NewWriter(buffer)
+
+	for key, value := range req.Form {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, "", fmt.Errorf("build multipart field %q: %w", key, err)
+		}
+	}
+	if req.AccessToken != "" {
+		if err := writer.WriteField("access_token", req.AccessToken); err != nil {
+			return nil, "", fmt.Errorf("build multipart access token: %w", err)
+		}
+	}
+	if req.AccessToken != "" && req.AppSecret != "" {
+		proof, err := auth.AppSecretProof(req.AccessToken, req.AppSecret)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := writer.WriteField("appsecret_proof", proof); err != nil {
+			return nil, "", fmt.Errorf("build multipart appsecret_proof: %w", err)
+		}
+	}
+
+	part, err := writer.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		return nil, "", fmt.Errorf("build multipart file field %q: %w", fieldName, err)
+	}
+	if _, err := part.Write(req.Multipart.FileBytes); err != nil {
+		return nil, "", fmt.Errorf("write multipart file bytes: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
+	}
+
+	return buffer.Bytes(), writer.FormDataContentType(), nil
 }
 
 func parseRateLimit(headers http.Header) RateLimit {

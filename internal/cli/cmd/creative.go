@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bilalbayram/metacli/internal/config"
 	"github.com/bilalbayram/metacli/internal/graph"
@@ -40,6 +41,7 @@ func NewCreativeCommand(runtime Runtime) *cobra.Command {
 		},
 	}
 	creativeCmd.AddCommand(newCreativeUploadCommand(runtime))
+	creativeCmd.AddCommand(newCreativeUploadVideoCommand(runtime))
 	creativeCmd.AddCommand(newCreativeCreateCommand(runtime))
 	return creativeCmd
 }
@@ -156,6 +158,55 @@ func newCreativeCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	return cmd
+}
+
+func newCreativeUploadVideoCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile      string
+		version      string
+		accountID    string
+		filePath     string
+		fileName     string
+		waitReady    bool
+		timeout      time.Duration
+		pollInterval time.Duration
+	)
+
+	cmd := &cobra.Command{
+		Use:   "upload-video",
+		Short: "Upload a video asset to an ad account",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveCreativeProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta creative upload-video", err)
+			}
+
+			result, err := creativeNewService(creativeNewGraphClient()).UploadVideo(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CreativeVideoUploadInput{
+				AccountID:    accountID,
+				FilePath:     filePath,
+				FileName:     fileName,
+				WaitReady:    waitReady,
+				Timeout:      timeout,
+				PollInterval: pollInterval,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta creative upload-video", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta creative upload-video", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Path to creative video file")
+	cmd.Flags().StringVar(&fileName, "name", "", "Uploaded file name override")
+	cmd.Flags().BoolVar(&waitReady, "wait-ready", false, "Poll until video readiness is reached")
+	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "Maximum wait duration when --wait-ready is set")
+	cmd.Flags().DurationVar(&pollInterval, "poll-interval", 5*time.Second, "Polling interval when --wait-ready is set")
 	return cmd
 }
 

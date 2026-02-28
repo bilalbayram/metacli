@@ -2,8 +2,10 @@ package graph
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,5 +201,75 @@ func TestClientPreservesUnknownErrorDiagnostics(t *testing.T) {
 	}
 	if got := apiErr.Diagnostics["error_user_title"]; got != "Needs attention" {
 		t.Fatalf("unexpected diagnostics payload: %#v", apiErr.Diagnostics)
+	}
+}
+
+func TestClientSupportsMultipartRequestBodies(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+		if r.URL.Path != "/v25.0/act_1234/advideos" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if contentType := r.Header.Get("Content-Type"); !strings.Contains(contentType, "multipart/form-data") {
+			t.Fatalf("unexpected content type %q", contentType)
+		}
+		if err := r.ParseMultipartForm(2 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		if got := r.FormValue("name"); got != "clip.mp4" {
+			t.Fatalf("unexpected name field %q", got)
+		}
+		if got := r.FormValue("access_token"); got != "token-1" {
+			t.Fatalf("unexpected access token %q", got)
+		}
+		if got := r.FormValue("appsecret_proof"); strings.TrimSpace(got) == "" {
+			t.Fatal("expected appsecret_proof field")
+		}
+		file, header, err := r.FormFile("source")
+		if err != nil {
+			t.Fatalf("open multipart file field: %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "clip.mp4" {
+			t.Fatalf("unexpected file name %q", header.Filename)
+		}
+		payload, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("read multipart payload: %v", err)
+		}
+		if string(payload) != "video-bytes" {
+			t.Fatalf("unexpected multipart payload %q", string(payload))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"vid_1"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	response, err := client.Do(context.Background(), Request{
+		Method:  http.MethodPost,
+		Path:    "act_1234/advideos",
+		Version: "v25.0",
+		Form: map[string]string{
+			"name": "clip.mp4",
+		},
+		Multipart: &MultipartFile{
+			FieldName: "source",
+			FileName:  "clip.mp4",
+			FileBytes: []byte("video-bytes"),
+		},
+		AccessToken: "token-1",
+		AppSecret:   "secret-1",
+	})
+	if err != nil {
+		t.Fatalf("client do multipart request: %v", err)
+	}
+	if got, _ := response.Body["id"].(string); got != "vid_1" {
+		t.Fatalf("unexpected response id %q", got)
 	}
 }

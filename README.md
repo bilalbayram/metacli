@@ -8,7 +8,7 @@ Meta Marketing CLI is a developer-first, fail-closed command-line interface for 
 - Fail-closed profile preflight before operational commands
 - Direct Graph API access (`api get/post/delete/batch`)
 - Insights account discovery and quality metric packs (`insights accounts list`, `insights run --metric-pack quality`)
-- Campaign, ad set, ad, creative, audience, and catalog workflows
+- Campaign, ad set, ad, creative (image + video), audience, and catalog workflows
 - Budget mutation guardrails for spend-changing writes
 - Instagram media upload, status, publish, and schedule lifecycle
 - Operations intelligence checks (schema drift, rate limits, policy preflight)
@@ -155,9 +155,19 @@ Primary command families:
 - `campaign`: `list`, `create`, `update`, `pause`, `resume`, `clone`
 - `adset`: `list`, `create`, `update`, `pause`, `resume`
 - `ad`: `list`, `create`, `update`, `pause`, `resume`, `clone`
-- `creative`: `upload`, `create`
+- `creative`: `upload`, `upload-video`, `create`
 - `audience`: `create`, `update`, `delete`, `list`, `get`
 - `catalog`: `upload-items`, `batch-items`
+
+Creative video upload example:
+```bash
+./meta --profile prod creative upload-video \
+  --account-id <AD_ACCOUNT_ID> \
+  --file ./assets/launch.mp4 \
+  --wait-ready \
+  --timeout 10m \
+  --poll-interval 5s
+```
 
 Campaign/ad set/ad list examples:
 ```bash
@@ -305,7 +315,7 @@ Auth metadata fields required on every profile in schema v2:
 | `campaign` | Campaign lifecycle | `list`, `create`, `update`, `pause`, `resume`, `clone` |
 | `adset` | Ad set lifecycle | `list`, `create`, `update`, `pause`, `resume` |
 | `ad` | Ad lifecycle | `list`, `create`, `update`, `pause`, `resume`, `clone` |
-| `creative` | Creative assets | `upload`, `create` |
+| `creative` | Creative assets | `upload`, `upload-video`, `create` |
 | `audience` | Audience lifecycle | `create`, `update`, `delete`, `list`, `get` |
 | `catalog` | Catalog item ingestion/mutation | `upload-items`, `batch-items` |
 

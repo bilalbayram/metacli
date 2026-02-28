@@ -310,6 +310,7 @@ func TestTrackAWorkflowSmokeCLICommands(t *testing.T) {
 	audienceListEnvelope := runTrackASmokeSuccessCommand(t, NewAudienceCommand(testRuntime("prod")), []string{
 		"list",
 		"--account-id", "1234",
+		"--kind", "custom",
 	}, "meta audience list")
 	audienceListData := trackASmokeEnvelopeData(t, audienceListEnvelope)
 	audienceItems, ok := audienceListData["audiences"].([]any)

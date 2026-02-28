@@ -284,6 +284,7 @@ func newAudienceListCommand(runtime Runtime) *cobra.Command {
 		profile      string
 		version      string
 		accountID    string
+		kind         string
 		fieldsRaw    string
 		limit        int
 		followNext   bool
@@ -292,7 +293,7 @@ func newAudienceListCommand(runtime Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List custom audiences",
+		Short: "List audiences",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateDomainGatePolicy(domainPolicy); err != nil {
@@ -313,6 +314,7 @@ func newAudienceListCommand(runtime Runtime) *cobra.Command {
 
 			result, err := audienceNewService(audienceNewGraphClient()).List(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AudienceListInput{
 				AccountID:  accountID,
+				Kind:       kind,
 				Fields:     csvToSlice(fieldsRaw),
 				Limit:      limit,
 				FollowNext: followNext,
@@ -341,6 +343,7 @@ func newAudienceListCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&kind, "kind", marketing.AudienceListKindAll, "Audience kind: all|custom|saved")
 	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to audience read fields)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of audiences to return")
 	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")

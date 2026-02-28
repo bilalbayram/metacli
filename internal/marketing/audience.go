@@ -19,6 +19,15 @@ var DefaultAudienceReadFields = []string{
 	"retention_days",
 }
 
+const (
+	AudienceListKindAll    = "all"
+	AudienceListKindCustom = "custom"
+	AudienceListKindSaved  = "saved"
+
+	audienceListEdgeCustom = "customaudiences"
+	audienceListEdgeSaved  = "saved_audiences"
+)
+
 type AudienceService struct {
 	Client *graph.Client
 }
@@ -42,6 +51,7 @@ type AudienceListInput struct {
 	Fields     []string
 	Limit      int
 	FollowNext bool
+	Kind       string
 }
 
 type AudienceGetInput struct {
@@ -89,40 +99,71 @@ func (s *AudienceService) List(ctx context.Context, version string, token string
 	if err != nil {
 		return nil, err
 	}
-
-	path := fmt.Sprintf("act_%s/customaudiences", accountID)
-	query := map[string]string{
-		"fields": strings.Join(fields, ","),
-	}
-	if input.Limit > 0 {
-		query["limit"] = strconv.Itoa(input.Limit)
-	}
-
-	items := make([]map[string]any, 0)
-	pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
-		Method:      "GET",
-		Path:        path,
-		Version:     strings.TrimSpace(version),
-		Query:       query,
-		AccessToken: token,
-		AppSecret:   appSecret,
-	}, graph.PaginationOptions{
-		FollowNext: input.FollowNext,
-		Limit:      input.Limit,
-	}, func(item map[string]any) error {
-		items = append(items, item)
-		return nil
-	})
+	kind, err := normalizeAudienceListKind(input.Kind)
 	if err != nil {
 		return nil, err
 	}
+	paths := audienceListPaths(accountID, kind)
+
+	items := make([]map[string]any, 0)
+	aggregatedPaging := &graph.PaginationResult{}
+	remaining := input.Limit
+	for _, path := range paths {
+		if remaining == 0 && input.Limit > 0 {
+			break
+		}
+
+		query := map[string]string{
+			"fields": strings.Join(fields, ","),
+		}
+		if remaining > 0 {
+			query["limit"] = strconv.Itoa(remaining)
+		}
+
+		perPathLimit := 0
+		if remaining > 0 {
+			perPathLimit = remaining
+		}
+
+		pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
+			Method:      "GET",
+			Path:        path,
+			Version:     strings.TrimSpace(version),
+			Query:       query,
+			AccessToken: token,
+			AppSecret:   appSecret,
+		}, graph.PaginationOptions{
+			FollowNext: input.FollowNext,
+			Limit:      perPathLimit,
+		}, func(item map[string]any) error {
+			items = append(items, item)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		aggregatedPaging.PagesFetched += pagination.PagesFetched
+		aggregatedPaging.ItemsFetched += pagination.ItemsFetched
+		if len(paths) == 1 {
+			aggregatedPaging.Next = pagination.Next
+		}
+
+		if remaining > 0 {
+			remaining -= pagination.ItemsFetched
+			if remaining < 0 {
+				remaining = 0
+			}
+		}
+	}
 
 	sortAudienceItemsByID(items)
+	requestPath := strings.Join(paths, ",")
 	return &AudienceListResult{
 		Operation:   "list",
-		RequestPath: path,
+		RequestPath: requestPath,
 		Audiences:   items,
-		Paging:      pagination,
+		Paging:      aggregatedPaging,
 	}, nil
 }
 
@@ -313,6 +354,39 @@ func normalizeAudienceReadFields(fields []string) ([]string, error) {
 		return nil, errors.New("audience fields are required when fields filter is set")
 	}
 	return normalized, nil
+}
+
+func normalizeAudienceListKind(kind string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", AudienceListKindAll:
+		return AudienceListKindAll, nil
+	case AudienceListKindCustom:
+		return AudienceListKindCustom, nil
+	case AudienceListKindSaved:
+		return AudienceListKindSaved, nil
+	default:
+		return "", fmt.Errorf(
+			"audience list kind must be one of [%s %s %s], got %q",
+			AudienceListKindAll,
+			AudienceListKindCustom,
+			AudienceListKindSaved,
+			kind,
+		)
+	}
+}
+
+func audienceListPaths(accountID string, kind string) []string {
+	switch kind {
+	case AudienceListKindCustom:
+		return []string{fmt.Sprintf("act_%s/%s", accountID, audienceListEdgeCustom)}
+	case AudienceListKindSaved:
+		return []string{fmt.Sprintf("act_%s/%s", accountID, audienceListEdgeSaved)}
+	default:
+		return []string{
+			fmt.Sprintf("act_%s/%s", accountID, audienceListEdgeCustom),
+			fmt.Sprintf("act_%s/%s", accountID, audienceListEdgeSaved),
+		}
+	}
 }
 
 func sortAudienceItemsByID(items []map[string]any) {

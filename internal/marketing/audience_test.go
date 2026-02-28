@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bilalbayram/metacli/internal/graph"
@@ -230,6 +231,7 @@ func TestAudienceListExecutesGraphReadWithDefaultFields(t *testing.T) {
 
 	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AudienceListInput{
 		AccountID: "act_1234",
+		Kind:      AudienceListKindCustom,
 		Limit:     25,
 	})
 	if err != nil {
@@ -276,6 +278,96 @@ func TestAudienceListExecutesGraphReadWithDefaultFields(t *testing.T) {
 	}
 }
 
+func TestAudienceListDefaultsToAllKinds(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu          sync.Mutex
+		requestPath []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestPath = append(requestPath, r.URL.Path)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if got := r.URL.Query().Get("fields"); got != "id,name,subtype,time_updated,retention_days" {
+			t.Fatalf("unexpected fields query %q", got)
+		}
+
+		switch r.URL.Path {
+		case "/v25.0/act_1234/customaudiences":
+			payload := map[string]any{
+				"data": []map[string]any{
+					{"id": "aud_2", "name": "Custom"},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode custom audience payload: %v", err)
+			}
+		case "/v25.0/act_1234/saved_audiences":
+			payload := map[string]any{
+				"data": []map[string]any{
+					{"id": "aud_1", "name": "Saved"},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode saved audience payload: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := NewAudienceService(client)
+
+	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AudienceListInput{
+		AccountID: "1234",
+	})
+	if err != nil {
+		t.Fatalf("list audiences: %v", err)
+	}
+	if result.RequestPath != "act_1234/customaudiences,act_1234/saved_audiences" {
+		t.Fatalf("unexpected request path %q", result.RequestPath)
+	}
+	if len(result.Audiences) != 2 {
+		t.Fatalf("expected 2 audiences, got %d", len(result.Audiences))
+	}
+	if got := result.Audiences[0]["id"]; got != "aud_1" {
+		t.Fatalf("expected sorted first id aud_1, got %v", got)
+	}
+	if got := result.Audiences[1]["id"]; got != "aud_2" {
+		t.Fatalf("expected sorted second id aud_2, got %v", got)
+	}
+	if result.Paging == nil {
+		t.Fatal("expected paging metadata")
+	}
+	if got := result.Paging.PagesFetched; got != 2 {
+		t.Fatalf("unexpected pages fetched %d", got)
+	}
+	if got := result.Paging.ItemsFetched; got != 2 {
+		t.Fatalf("unexpected items fetched %d", got)
+	}
+	if got := result.Paging.Next; got != "" {
+		t.Fatalf("expected empty aggregated next cursor for all kinds, got %q", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestPath) != 2 {
+		t.Fatalf("expected two requests, got %d", len(requestPath))
+	}
+	if requestPath[0] != "/v25.0/act_1234/customaudiences" {
+		t.Fatalf("unexpected first request path %q", requestPath[0])
+	}
+	if requestPath[1] != "/v25.0/act_1234/saved_audiences" {
+		t.Fatalf("unexpected second request path %q", requestPath[1])
+	}
+}
+
 func TestAudienceListFollowsPaginationWhenRequested(t *testing.T) {
 	t.Parallel()
 
@@ -316,6 +408,7 @@ func TestAudienceListFollowsPaginationWhenRequested(t *testing.T) {
 
 	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AudienceListInput{
 		AccountID:  "1234",
+		Kind:       AudienceListKindCustom,
 		Fields:     []string{"id", "name"},
 		FollowNext: true,
 	})
@@ -361,6 +454,7 @@ func TestAudienceListSortsMissingOrInvalidIDsLast(t *testing.T) {
 
 	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AudienceListInput{
 		AccountID: "1234",
+		Kind:      AudienceListKindCustom,
 	})
 	if err != nil {
 		t.Fatalf("list audiences: %v", err)
@@ -432,6 +526,22 @@ func TestAudienceListRejectsMissingAccountID(t *testing.T) {
 		t.Fatal("expected list error")
 	}
 	if !strings.Contains(err.Error(), "account id is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAudienceListRejectsInvalidKind(t *testing.T) {
+	t.Parallel()
+
+	service := NewAudienceService(graph.NewClient(nil, ""))
+	_, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AudienceListInput{
+		AccountID: "1234",
+		Kind:      "unsupported",
+	})
+	if err == nil {
+		t.Fatal("expected list error")
+	}
+	if !strings.Contains(err.Error(), "audience list kind must be one of [all custom saved]") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

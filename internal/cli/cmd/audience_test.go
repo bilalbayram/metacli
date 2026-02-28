@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bilalbayram/metacli/internal/config"
@@ -478,6 +481,7 @@ func TestAudienceListExecutesRead(t *testing.T) {
 	cmd.SetArgs([]string{
 		"list",
 		"--account-id", "1234",
+		"--kind", "custom",
 		"--fields", "id,name",
 		"--limit", "10",
 	})
@@ -538,6 +542,123 @@ func TestAudienceListExecutesRead(t *testing.T) {
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAudienceListDefaultsToAllKinds(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		requestPath []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestPath = append(requestPath, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v25.0/act_1234/customaudiences":
+			payload := map[string]any{
+				"data": []map[string]any{
+					{"id": "aud_2", "name": "Custom"},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode custom audience payload: %v", err)
+			}
+		case "/v25.0/act_1234/saved_audiences":
+			payload := map[string]any{
+				"data": []map[string]any{
+					{"id": "aud_1", "name": "Saved"},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode saved audience payload: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(server.Client(), server.URL)
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "1234",
+		"--fields", "id,name",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience list: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience list")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["request_path"]; got != "act_1234/customaudiences,act_1234/saved_audiences" {
+		t.Fatalf("unexpected request_path %v", got)
+	}
+	audiences, ok := data["audiences"].([]any)
+	if !ok || len(audiences) != 2 {
+		t.Fatalf("expected two audiences, got %#v", data["audiences"])
+	}
+	first, ok := audiences[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first audience object, got %T", audiences[0])
+	}
+	if got := first["id"]; got != "aud_1" {
+		t.Fatalf("expected sorted first id aud_1, got %v", got)
+	}
+	paging, ok := data["paging"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data.paging object, got %T", data["paging"])
+	}
+	if got := paging["pages_fetched"]; got != float64(2) {
+		t.Fatalf("unexpected pages_fetched %v", got)
+	}
+	if got := paging["items_fetched"]; got != float64(2) {
+		t.Fatalf("unexpected items_fetched %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestPath) != 2 {
+		t.Fatalf("expected two requests, got %d", len(requestPath))
+	}
+	if requestPath[0] != "/v25.0/act_1234/customaudiences" {
+		t.Fatalf("unexpected first request path %q", requestPath[0])
+	}
+	if requestPath[1] != "/v25.0/act_1234/saved_audiences" {
+		t.Fatalf("unexpected second request path %q", requestPath[1])
 	}
 }
 
@@ -654,6 +775,48 @@ func TestAudienceListFailsWithoutAccountID(t *testing.T) {
 		t.Fatal("expected command error")
 	}
 	if !strings.Contains(err.Error(), "account id is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience list" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
+func TestAudienceListFailsWithInvalidKind(t *testing.T) {
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{"list", "--account-id", "1234", "--kind", "unsupported"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "audience list kind must be one of [all custom saved]") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if output.Len() != 0 {

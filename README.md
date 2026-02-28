@@ -207,13 +207,19 @@ Budget mutation guardrail example:
 
 Audience read examples:
 ```bash
-# List audiences with default fields: id,name,subtype,time_updated,retention_days
+# List audiences (default kind=all includes custom + saved)
 ./meta --profile prod audience list \
   --account-id <AD_ACCOUNT_ID>
 
-# List audiences with selected fields and pagination controls
+# List only custom audiences
 ./meta --profile prod audience list \
   --account-id <AD_ACCOUNT_ID> \
+  --kind custom
+
+# List only saved audiences with selected fields and pagination controls
+./meta --profile prod audience list \
+  --account-id <AD_ACCOUNT_ID> \
+  --kind saved \
   --fields id,name,subtype,time_updated \
   --limit 100 \
   --follow-next

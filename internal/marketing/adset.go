@@ -16,6 +16,18 @@ const (
 	AdSetStatusPaused = "PAUSED"
 )
 
+var DefaultAdSetReadFields = []string{
+	"id",
+	"name",
+	"status",
+	"effective_status",
+	"campaign_id",
+	"billing_event",
+	"optimization_goal",
+	"daily_budget",
+	"lifetime_budget",
+}
+
 type AdSetMutationResult struct {
 	Operation   string         `json:"operation"`
 	AdSetID     string         `json:"adset_id"`
@@ -38,6 +50,26 @@ type AdSetStatusInput struct {
 	Status  string
 }
 
+type AdSetListInput struct {
+	AccountID         string
+	CampaignID        string
+	Fields            []string
+	Name              string
+	Statuses          []string
+	EffectiveStatuses []string
+	ActiveOnly        bool
+	Limit             int
+	PageSize          int
+	FollowNext        bool
+}
+
+type AdSetListResult struct {
+	Operation   string                  `json:"operation"`
+	RequestPath string                  `json:"request_path"`
+	AdSets      []map[string]any        `json:"adsets"`
+	Paging      *graph.PaginationResult `json:"paging,omitempty"`
+}
+
 type AdSetService struct {
 	Client *graph.Client
 }
@@ -51,6 +83,90 @@ func NewAdSetService(client *graph.Client) *AdSetService {
 
 func NewAdsetService(client *graph.Client) *AdSetService {
 	return NewAdSetService(client)
+}
+
+func (s *AdSetService) List(ctx context.Context, version string, token string, appSecret string, input AdSetListInput) (*AdSetListResult, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("ad set service client is required")
+	}
+	if input.Limit < 0 {
+		return nil, errors.New("ad set list limit must be >= 0")
+	}
+	if input.PageSize < 0 {
+		return nil, errors.New("ad set list page size must be >= 0")
+	}
+
+	accountID, err := normalizeAdAccountID(input.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := normalizeAdSetReadFields(input.Fields)
+	if err != nil {
+		return nil, err
+	}
+	filters, err := normalizeEntityReadFilters(input.Name, input.Statuses, input.EffectiveStatuses, input.ActiveOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignID := ""
+	if strings.TrimSpace(input.CampaignID) != "" {
+		campaignID, err = normalizeGraphID("campaign id", input.CampaignID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	path := fmt.Sprintf("act_%s/adsets", accountID)
+	if campaignID != "" {
+		path = fmt.Sprintf("%s/adsets", campaignID)
+	}
+
+	fetchFields := mergeEntityReadFields(fields, "name", "status", "effective_status", "campaign_id")
+	query := map[string]string{
+		"fields": strings.Join(fetchFields, ","),
+	}
+	if input.PageSize > 0 {
+		query["limit"] = strconv.Itoa(input.PageSize)
+	}
+
+	rows := make([]map[string]any, 0)
+	pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
+		Method:      "GET",
+		Path:        path,
+		Version:     strings.TrimSpace(version),
+		Query:       query,
+		AccessToken: token,
+		AppSecret:   appSecret,
+	}, graph.PaginationOptions{
+		FollowNext: input.FollowNext,
+		PageSize:   input.PageSize,
+	}, func(item map[string]any) error {
+		if !matchEntityReadFilters(item, filters) {
+			return nil
+		}
+		if !matchEntityIDFilter(item, "campaign_id", campaignID) {
+			return nil
+		}
+		rows = append(rows, projectEntityReadFields(item, fields))
+		if input.Limit > 0 && len(rows) > input.Limit {
+			rows = rows[:input.Limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if input.Limit > 0 && len(rows) > input.Limit {
+		rows = rows[:input.Limit]
+	}
+
+	return &AdSetListResult{
+		Operation:   "list",
+		RequestPath: path,
+		AdSets:      rows,
+		Paging:      pagination,
+	}, nil
 }
 
 func (s *AdSetService) Create(ctx context.Context, version string, token string, appSecret string, input AdSetCreateInput) (*AdSetMutationResult, error) {
@@ -243,6 +359,10 @@ func normalizeAdSetMutationParams(params map[string]string) (map[string]string, 
 		return nil, errors.New("ad set mutation payload cannot be empty")
 	}
 	return normalized, nil
+}
+
+func normalizeAdSetReadFields(fields []string) ([]string, error) {
+	return normalizeEntityReadFields("ad set", fields, DefaultAdSetReadFields)
 }
 
 func decodeGraphIDField(body map[string]any, field string) (string, error) {

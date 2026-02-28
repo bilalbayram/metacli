@@ -52,6 +52,7 @@ func NewCampaignCommand(runtime Runtime) *cobra.Command {
 		},
 	}
 	campaignCmd.AddCommand(newCampaignCreateCommand(runtime))
+	campaignCmd.AddCommand(newCampaignListCommand(runtime))
 	campaignCmd.AddCommand(newCampaignResolveRequirementsCommand(runtime))
 	campaignCmd.AddCommand(newCampaignUpdateCommand(runtime))
 	campaignCmd.AddCommand(newCampaignPauseCommand(runtime))
@@ -275,6 +276,79 @@ func newCampaignResolveRequirementsCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
+	return cmd
+}
+
+func newCampaignListCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile            string
+		version            string
+		accountID          string
+		fieldsRaw          string
+		nameRaw            string
+		statusRaw          string
+		effectiveStatusRaw string
+		limit              int
+		pageSize           int
+		followNext         bool
+		activeOnly         bool
+		schemaDir          string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List campaigns",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveCampaignProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign list", err)
+			}
+
+			linter, err := newCampaignMutationLinter(creds, resolvedVersion, schemaDir)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign list", err)
+			}
+
+			fields := csvToSlice(fieldsRaw)
+			if len(fields) == 0 {
+				fields = append([]string(nil), marketing.DefaultCampaignReadFields...)
+			}
+			if err := lintCampaignListReadFields(linter, fields); err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign list", err)
+			}
+
+			result, err := campaignNewService(campaignNewGraphClient()).List(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.CampaignListInput{
+				AccountID:         accountID,
+				Fields:            fields,
+				Name:              nameRaw,
+				Statuses:          csvToSlice(statusRaw),
+				EffectiveStatuses: csvToSlice(effectiveStatusRaw),
+				ActiveOnly:        activeOnly,
+				Limit:             limit,
+				PageSize:          pageSize,
+				FollowNext:        followNext,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta campaign list", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta campaign list", result.Campaigns, result.Paging, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to campaign read fields)")
+	cmd.Flags().StringVar(&nameRaw, "name", "", "Case-insensitive campaign name contains filter")
+	cmd.Flags().StringVar(&statusRaw, "status", "", "Comma-separated campaign status filter values")
+	cmd.Flags().StringVar(&effectiveStatusRaw, "effective-status", "", "Comma-separated campaign effective_status filter values")
+	cmd.Flags().BoolVar(&activeOnly, "active-only", false, "Show only ACTIVE campaigns by status/effective_status")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of campaigns to return after filtering")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Graph page size for campaign reads")
+	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
 	return cmd
 }
 
@@ -632,6 +706,18 @@ func lintCampaignReadFields(linter *lint.Linter, fields []string) error {
 	}, true)
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("campaign clone field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
+	}
+	return nil
+}
+
+func lintCampaignListReadFields(linter *lint.Linter, fields []string) error {
+	result := linter.Lint(&lint.RequestSpec{
+		Method: "GET",
+		Path:   campaignMutationLintPath,
+		Fields: fields,
+	}, true)
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("campaign list field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
 }

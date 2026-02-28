@@ -76,6 +76,7 @@ func NewAdsetCommand(runtime Runtime) *cobra.Command {
 			return errors.New("adset requires a subcommand")
 		},
 	}
+	adsetCmd.AddCommand(newAdsetListCommand(runtime))
 	adsetCmd.AddCommand(newAdsetCreateCommand(runtime))
 	adsetCmd.AddCommand(newAdsetUpdateCommand(runtime))
 	adsetCmd.AddCommand(newAdsetPauseCommand(runtime))
@@ -85,6 +86,82 @@ func NewAdsetCommand(runtime Runtime) *cobra.Command {
 
 func NewAdSetCommand(runtime Runtime) *cobra.Command {
 	return NewAdsetCommand(runtime)
+}
+
+func newAdsetListCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile            string
+		version            string
+		accountID          string
+		campaignID         string
+		fieldsRaw          string
+		nameRaw            string
+		statusRaw          string
+		effectiveStatusRaw string
+		activeOnly         bool
+		limit              int
+		pageSize           int
+		followNext         bool
+		schemaDir          string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List ad sets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveAdsetProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta adset list", err)
+			}
+
+			linter, err := newAdsetMutationLinter(creds, resolvedVersion, schemaDir)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta adset list", err)
+			}
+
+			fields := csvToSlice(fieldsRaw)
+			if len(fields) == 0 {
+				fields = append([]string(nil), marketing.DefaultAdSetReadFields...)
+			}
+			if err := lintAdsetReadFields(linter, fields); err != nil {
+				return writeCommandError(cmd, runtime, "meta adset list", err)
+			}
+
+			result, err := adsetNewService(adsetNewGraphClient()).List(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AdSetListInput{
+				AccountID:         accountID,
+				CampaignID:        campaignID,
+				Fields:            fields,
+				Name:              nameRaw,
+				Statuses:          csvToSlice(statusRaw),
+				EffectiveStatuses: csvToSlice(effectiveStatusRaw),
+				ActiveOnly:        activeOnly,
+				Limit:             limit,
+				PageSize:          pageSize,
+				FollowNext:        followNext,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta adset list", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta adset list", result.AdSets, result.Paging, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign id filter")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to ad set read fields)")
+	cmd.Flags().StringVar(&nameRaw, "name", "", "Case-insensitive ad set name contains filter")
+	cmd.Flags().StringVar(&statusRaw, "status", "", "Comma-separated ad set status filter values")
+	cmd.Flags().StringVar(&effectiveStatusRaw, "effective-status", "", "Comma-separated ad set effective_status filter values")
+	cmd.Flags().BoolVar(&activeOnly, "active-only", false, "Show only ACTIVE ad sets by status/effective_status")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of ad sets to return after filtering")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Graph page size for ad set reads")
+	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	return cmd
 }
 
 func newAdsetCreateCommand(runtime Runtime) *cobra.Command {
@@ -347,6 +424,18 @@ func lintAdsetMutation(linter *lint.Linter, params map[string]string) error {
 	}, true)
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("ad set mutation lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
+	}
+	return nil
+}
+
+func lintAdsetReadFields(linter *lint.Linter, fields []string) error {
+	result := linter.Lint(&lint.RequestSpec{
+		Method: "GET",
+		Path:   adsetMutationLintPath,
+		Fields: fields,
+	}, true)
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("ad set list field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
 }

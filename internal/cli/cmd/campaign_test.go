@@ -21,7 +21,7 @@ func TestNewCampaignCommandIncludesLifecycleSubcommands(t *testing.T) {
 
 	cmd := NewCampaignCommand(Runtime{})
 
-	for _, name := range []string{"create", "resolve-requirements", "update", "pause", "resume", "clone"} {
+	for _, name := range []string{"create", "list", "resolve-requirements", "update", "pause", "resume", "clone"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s subcommand: %v", name, err)
@@ -118,6 +118,208 @@ func TestCampaignCreateExecutesMutation(t *testing.T) {
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignListExecutesRead(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[
+			{"id":"cmp_2","name":"Retarget","status":"PAUSED","effective_status":"PAUSED"},
+			{"id":"cmp_1","name":"Launch Campaign","status":"ACTIVE","effective_status":"ACTIVE"}
+		]}`,
+	}
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "act_1234",
+		"--fields", "id,name,status",
+		"--name", "launch",
+		"--status", "ACTIVE",
+		"--effective-status", "ACTIVE",
+		"--active-only",
+		"--limit", "10",
+		"--page-size", "5",
+		"--follow-next",
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute campaign list: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_1234/campaigns" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,name,status,effective_status" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+	if got := requestURL.Query().Get("limit"); got != "5" {
+		t.Fatalf("unexpected page-size query %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta campaign list")
+	data, ok := envelope["data"].([]any)
+	if !ok {
+		t.Fatalf("expected array payload, got %T", envelope["data"])
+	}
+	if len(data) != 1 {
+		t.Fatalf("expected one campaign row, got %d", len(data))
+	}
+	first, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected campaign row object, got %T", data[0])
+	}
+	if got := first["id"]; got != "cmp_1" {
+		t.Fatalf("unexpected campaign id %v", got)
+	}
+	paging, ok := envelope["paging"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level paging object, got %T", envelope["paging"])
+	}
+	if got := paging["pages_fetched"]; got != float64(1) {
+		t.Fatalf("unexpected pages_fetched %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestCampaignListFailsOnFieldLint(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeCampaignSchemaPack(t)
+	useCampaignDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewCampaignCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "1234",
+		"--fields", "id,unknown_field",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "campaign list field lint failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on list field lint failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta campaign list" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
+func TestCampaignListSupportsOutputFormats(t *testing.T) {
+	schemaDir := writeCampaignSchemaPack(t)
+	for _, format := range []string{"json", "jsonl", "table", "csv"} {
+		t.Run(format, func(t *testing.T) {
+			stub := &stubHTTPClient{
+				t:          t,
+				statusCode: http.StatusOK,
+				response:   `{"data":[{"id":"cmp_1","name":"Launch","status":"ACTIVE","effective_status":"ACTIVE"}]}`,
+			}
+			useCampaignDependencies(t,
+				func(string) (*ProfileCredentials, error) {
+					return &ProfileCredentials{
+						Name: "prod",
+						Profile: config.Profile{
+							Domain:       config.DefaultDomain,
+							GraphVersion: config.DefaultGraphVersion,
+						},
+						Token: "test-token",
+					}, nil
+				},
+				func() *graph.Client {
+					client := graph.NewClient(stub, "https://graph.example.com")
+					client.MaxRetries = 0
+					return client
+				},
+			)
+
+			output := &bytes.Buffer{}
+			errOutput := &bytes.Buffer{}
+			cmd := NewCampaignCommand(testRuntimeWithOutputFormat("prod", format))
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetOut(output)
+			cmd.SetErr(errOutput)
+			cmd.SetArgs([]string{
+				"list",
+				"--account-id", "1234",
+				"--fields", "id,name,status",
+				"--schema-dir", schemaDir,
+			})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute campaign list (%s): %v", format, err)
+			}
+			if output.Len() == 0 {
+				t.Fatalf("expected non-empty output for %s", format)
+			}
+			if errOutput.Len() != 0 {
+				t.Fatalf("expected empty stderr for %s, got %q", format, errOutput.String())
+			}
+		})
 	}
 }
 
@@ -1731,8 +1933,8 @@ func writeCampaignSchemaPack(t *testing.T) string {
 	pack := `{
   "domain":"marketing",
   "version":"v25.0",
-  "entities":{"campaign":["id","name","status","objective","daily_budget","lifetime_budget"]},
-  "endpoint_params":{"campaigns.post":["name","status","objective","daily_budget","lifetime_budget"]},
+  "entities":{"campaign":["id","name","status","effective_status","objective","daily_budget","lifetime_budget"]},
+  "endpoint_params":{"campaigns":["fields","effective_status","limit","after","before"],"campaigns.post":["name","status","objective","daily_budget","lifetime_budget"]},
   "deprecated_params":{"campaigns.post":["legacy_param"]}
 }`
 	if err := os.WriteFile(packPath, []byte(pack), 0o644); err != nil {
@@ -1753,4 +1955,13 @@ func writeCampaignRuntimeRulePack(t *testing.T, body string) string {
 		t.Fatalf("write runtime rule pack: %v", err)
 	}
 	return rulesDir
+}
+
+func testRuntimeWithOutputFormat(profile string, outputFormat string) Runtime {
+	debug := false
+	return Runtime{
+		Profile: &profile,
+		Output:  &outputFormat,
+		Debug:   &debug,
+	}
 }

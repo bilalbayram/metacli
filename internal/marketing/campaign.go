@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/graph"
@@ -21,6 +22,16 @@ var DefaultCampaignCloneFields = []string{
 	"name",
 	"objective",
 	"status",
+	"daily_budget",
+	"lifetime_budget",
+}
+
+var DefaultCampaignReadFields = []string{
+	"id",
+	"name",
+	"status",
+	"effective_status",
+	"objective",
 	"daily_budget",
 	"lifetime_budget",
 }
@@ -56,11 +67,30 @@ type CampaignStatusInput struct {
 	Status     string
 }
 
+type CampaignListInput struct {
+	AccountID         string
+	Fields            []string
+	Name              string
+	Statuses          []string
+	EffectiveStatuses []string
+	ActiveOnly        bool
+	Limit             int
+	PageSize          int
+	FollowNext        bool
+}
+
 type CampaignCloneInput struct {
 	SourceCampaignID string
 	TargetAccountID  string
 	Overrides        map[string]string
 	Fields           []string
+}
+
+type CampaignListResult struct {
+	Operation   string                  `json:"operation"`
+	RequestPath string                  `json:"request_path"`
+	Campaigns   []map[string]any        `json:"campaigns"`
+	Paging      *graph.PaginationResult `json:"paging,omitempty"`
 }
 
 type CampaignCloneResult struct {
@@ -92,6 +122,76 @@ func NewCampaignService(client *graph.Client) *Service {
 		client = graph.NewClient(nil, "")
 	}
 	return &Service{Client: client}
+}
+
+func (s *Service) List(ctx context.Context, version string, token string, appSecret string, input CampaignListInput) (*CampaignListResult, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("campaign service client is required")
+	}
+	if input.Limit < 0 {
+		return nil, errors.New("campaign list limit must be >= 0")
+	}
+	if input.PageSize < 0 {
+		return nil, errors.New("campaign list page size must be >= 0")
+	}
+
+	accountID, err := normalizeAdAccountID(input.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := normalizeCampaignReadFields(input.Fields)
+	if err != nil {
+		return nil, err
+	}
+	filters, err := normalizeEntityReadFilters(input.Name, input.Statuses, input.EffectiveStatuses, input.ActiveOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	fetchFields := mergeEntityReadFields(fields, "name", "status", "effective_status")
+	path := fmt.Sprintf("act_%s/campaigns", accountID)
+	query := map[string]string{
+		"fields": strings.Join(fetchFields, ","),
+	}
+	if input.PageSize > 0 {
+		query["limit"] = strconv.Itoa(input.PageSize)
+	}
+
+	rows := make([]map[string]any, 0)
+	pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
+		Method:      "GET",
+		Path:        path,
+		Version:     strings.TrimSpace(version),
+		Query:       query,
+		AccessToken: token,
+		AppSecret:   appSecret,
+	}, graph.PaginationOptions{
+		FollowNext: input.FollowNext,
+		PageSize:   input.PageSize,
+	}, func(item map[string]any) error {
+		if !matchEntityReadFilters(item, filters) {
+			return nil
+		}
+		rows = append(rows, projectEntityReadFields(item, fields))
+		if input.Limit > 0 && len(rows) > input.Limit {
+			rows = rows[:input.Limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if input.Limit > 0 && len(rows) > input.Limit {
+		rows = rows[:input.Limit]
+	}
+
+	return &CampaignListResult{
+		Operation:   "list",
+		RequestPath: path,
+		Campaigns:   rows,
+		Paging:      pagination,
+	}, nil
 }
 
 func (s *Service) Create(ctx context.Context, version string, token string, appSecret string, input CampaignCreateInput) (*CampaignMutationResult, error) {
@@ -325,6 +425,10 @@ func normalizeMutationParams(params map[string]string) (map[string]string, error
 		return nil, errors.New("campaign mutation payload cannot be empty")
 	}
 	return normalized, nil
+}
+
+func normalizeCampaignReadFields(fields []string) ([]string, error) {
+	return normalizeEntityReadFields("campaign", fields, DefaultCampaignReadFields)
 }
 
 func normalizeOptionalParams(params map[string]string) (map[string]string, error) {

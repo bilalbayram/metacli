@@ -89,7 +89,7 @@ func TestOpsInitCommandWritesSuccessEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read state file: %v", err)
 	}
-	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 4,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"c48d7b1d73a5782df0d2abd91ee907ca71e5827e0c1a2184cfac254094f65be6\"\n    },\n    \"rate_limit\": {\n      \"app_call_count\": 0,\n      \"app_total_cputime\": 0,\n      \"app_total_time\": 0,\n      \"page_call_count\": 0,\n      \"page_total_cputime\": 0,\n      \"page_total_time\": 0,\n      \"ad_account_util_pct\": 0\n    }\n  }\n}\n"
+	expectedState := "{\n  \"schema_version\": 1,\n  \"baseline_version\": 4,\n  \"status\": \"initialized\",\n  \"snapshots\": {\n    \"changelog_occ\": {\n      \"latest_version\": \"v25.0\",\n      \"occ_digest\": \"occ.2025.stable\"\n    },\n    \"schema_pack\": {\n      \"domain\": \"marketing\",\n      \"version\": \"v25.0\",\n      \"sha256\": \"5771386009d6e3befeb716cbfb17b0d55a541f0e9f024f65b0376e4d4d51f842\"\n    },\n    \"rate_limit\": {\n      \"app_call_count\": 0,\n      \"app_total_cputime\": 0,\n      \"app_total_time\": 0,\n      \"page_call_count\": 0,\n      \"page_total_cputime\": 0,\n      \"page_total_time\": 0,\n      \"ad_account_util_pct\": 0\n    }\n  }\n}\n"
 	if string(rawState) != expectedState {
 		t.Fatalf("unexpected state file contents:\n%s", string(rawState))
 	}

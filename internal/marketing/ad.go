@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bilalbayram/metacli/internal/graph"
@@ -21,6 +22,16 @@ var DefaultAdCloneFields = []string{
 	"id",
 	"name",
 	"status",
+	"adset_id",
+	"creative",
+}
+
+var DefaultAdReadFields = []string{
+	"id",
+	"name",
+	"status",
+	"effective_status",
+	"campaign_id",
 	"adset_id",
 	"creative",
 }
@@ -70,6 +81,27 @@ type AdStatusInput struct {
 	Status string
 }
 
+type AdListInput struct {
+	AccountID         string
+	CampaignID        string
+	AdSetID           string
+	Fields            []string
+	Name              string
+	Statuses          []string
+	EffectiveStatuses []string
+	ActiveOnly        bool
+	Limit             int
+	PageSize          int
+	FollowNext        bool
+}
+
+type AdListResult struct {
+	Operation   string                  `json:"operation"`
+	RequestPath string                  `json:"request_path"`
+	Ads         []map[string]any        `json:"ads"`
+	Paging      *graph.PaginationResult `json:"paging,omitempty"`
+}
+
 type AdCloneInput struct {
 	SourceAdID      string
 	TargetAccountID string
@@ -96,6 +128,104 @@ func NewAdService(client *graph.Client) *AdService {
 		client = graph.NewClient(nil, "")
 	}
 	return &AdService{Client: client}
+}
+
+func (s *AdService) List(ctx context.Context, version string, token string, appSecret string, input AdListInput) (*AdListResult, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("ad service client is required")
+	}
+	if input.Limit < 0 {
+		return nil, errors.New("ad list limit must be >= 0")
+	}
+	if input.PageSize < 0 {
+		return nil, errors.New("ad list page size must be >= 0")
+	}
+
+	accountID, err := normalizeAdAccountID(input.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := normalizeAdReadFields(input.Fields)
+	if err != nil {
+		return nil, err
+	}
+	filters, err := normalizeEntityReadFilters(input.Name, input.Statuses, input.EffectiveStatuses, input.ActiveOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	campaignID := ""
+	if strings.TrimSpace(input.CampaignID) != "" {
+		campaignID, err = normalizeGraphID("campaign id", input.CampaignID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	adSetID := ""
+	if strings.TrimSpace(input.AdSetID) != "" {
+		adSetID, err = normalizeGraphID("ad set id", input.AdSetID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	path := fmt.Sprintf("act_%s/ads", accountID)
+	switch {
+	case adSetID != "":
+		path = fmt.Sprintf("%s/ads", adSetID)
+	case campaignID != "":
+		path = fmt.Sprintf("%s/ads", campaignID)
+	}
+
+	fetchFields := mergeEntityReadFields(fields, "name", "status", "effective_status", "campaign_id", "adset_id")
+	query := map[string]string{
+		"fields": strings.Join(fetchFields, ","),
+	}
+	if input.PageSize > 0 {
+		query["limit"] = strconv.Itoa(input.PageSize)
+	}
+
+	rows := make([]map[string]any, 0)
+	pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
+		Method:      "GET",
+		Path:        path,
+		Version:     strings.TrimSpace(version),
+		Query:       query,
+		AccessToken: token,
+		AppSecret:   appSecret,
+	}, graph.PaginationOptions{
+		FollowNext: input.FollowNext,
+		PageSize:   input.PageSize,
+	}, func(item map[string]any) error {
+		if !matchEntityReadFilters(item, filters) {
+			return nil
+		}
+		if !matchEntityIDFilter(item, "campaign_id", campaignID) {
+			return nil
+		}
+		if !matchEntityIDFilter(item, "adset_id", adSetID) {
+			return nil
+		}
+		rows = append(rows, projectEntityReadFields(item, fields))
+		if input.Limit > 0 && len(rows) > input.Limit {
+			rows = rows[:input.Limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if input.Limit > 0 && len(rows) > input.Limit {
+		rows = rows[:input.Limit]
+	}
+
+	return &AdListResult{
+		Operation:   "list",
+		RequestPath: path,
+		Ads:         rows,
+		Paging:      pagination,
+	}, nil
 }
 
 func (s *AdService) Create(ctx context.Context, version string, token string, appSecret string, input AdCreateInput) (*AdMutationResult, error) {
@@ -393,6 +523,10 @@ func normalizeAdMutationParams(params map[string]string) (map[string]string, err
 		return nil, errors.New("ad mutation payload cannot be empty")
 	}
 	return normalized, nil
+}
+
+func normalizeAdReadFields(fields []string) ([]string, error) {
+	return normalizeEntityReadFields("ad", fields, DefaultAdReadFields)
 }
 
 func normalizeAdCloneFields(fields []string) ([]string, error) {

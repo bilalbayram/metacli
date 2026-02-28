@@ -39,12 +39,92 @@ func NewAdCommand(runtime Runtime) *cobra.Command {
 			return errors.New("ad requires a subcommand")
 		},
 	}
+	adCmd.AddCommand(newAdListCommand(runtime))
 	adCmd.AddCommand(newAdCreateCommand(runtime))
 	adCmd.AddCommand(newAdUpdateCommand(runtime))
 	adCmd.AddCommand(newAdPauseCommand(runtime))
 	adCmd.AddCommand(newAdResumeCommand(runtime))
 	adCmd.AddCommand(newAdCloneCommand(runtime))
 	return adCmd
+}
+
+func newAdListCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile            string
+		version            string
+		accountID          string
+		campaignID         string
+		adSetID            string
+		fieldsRaw          string
+		nameRaw            string
+		statusRaw          string
+		effectiveStatusRaw string
+		activeOnly         bool
+		limit              int
+		pageSize           int
+		followNext         bool
+		schemaDir          string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List ads",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			creds, resolvedVersion, err := resolveAdProfileAndVersion(runtime, profile, version)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ad list", err)
+			}
+
+			linter, err := newAdMutationLinter(creds, resolvedVersion, schemaDir)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ad list", err)
+			}
+
+			fields := csvToSlice(fieldsRaw)
+			if len(fields) == 0 {
+				fields = append([]string(nil), marketing.DefaultAdReadFields...)
+			}
+			if err := lintAdListReadFields(linter, fields); err != nil {
+				return writeCommandError(cmd, runtime, "meta ad list", err)
+			}
+
+			result, err := adNewService(adNewGraphClient()).List(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AdListInput{
+				AccountID:         accountID,
+				CampaignID:        campaignID,
+				AdSetID:           adSetID,
+				Fields:            fields,
+				Name:              nameRaw,
+				Statuses:          csvToSlice(statusRaw),
+				EffectiveStatuses: csvToSlice(effectiveStatusRaw),
+				ActiveOnly:        activeOnly,
+				Limit:             limit,
+				PageSize:          pageSize,
+				FollowNext:        followNext,
+			})
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta ad list", err)
+			}
+
+			return writeSuccess(cmd, runtime, "meta ad list", result.Ads, result.Paging, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign id filter")
+	cmd.Flags().StringVar(&adSetID, "adset-id", "", "Ad set id filter")
+	cmd.Flags().StringVar(&fieldsRaw, "fields", "", "Comma-separated Graph fields (defaults to ad read fields)")
+	cmd.Flags().StringVar(&nameRaw, "name", "", "Case-insensitive ad name contains filter")
+	cmd.Flags().StringVar(&statusRaw, "status", "", "Comma-separated ad status filter values")
+	cmd.Flags().StringVar(&effectiveStatusRaw, "effective-status", "", "Comma-separated ad effective_status filter values")
+	cmd.Flags().BoolVar(&activeOnly, "active-only", false, "Show only ACTIVE ads by status/effective_status")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of ads to return after filtering")
+	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Graph page size for ad reads")
+	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	return cmd
 }
 
 func newAdCreateCommand(runtime Runtime) *cobra.Command {
@@ -383,6 +463,18 @@ func lintAdReadFields(linter *lint.Linter, fields []string) error {
 	}, true)
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("ad clone field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
+	}
+	return nil
+}
+
+func lintAdListReadFields(linter *lint.Linter, fields []string) error {
+	result := linter.Lint(&lint.RequestSpec{
+		Method: "GET",
+		Path:   adMutationLintPath,
+		Fields: fields,
+	}, true)
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("ad list field lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
 }

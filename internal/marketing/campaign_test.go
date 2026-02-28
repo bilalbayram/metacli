@@ -206,6 +206,124 @@ func TestCampaignSetStatusExecutesStatusMutation(t *testing.T) {
 	}
 }
 
+func TestCampaignListExecutesGraphReadWithFiltersAndProjection(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[
+			{"id":"cmp_1","name":"Launch Alpha","status":"ACTIVE","effective_status":"ACTIVE","objective":"OUTCOME_SALES"},
+			{"id":"cmp_2","name":"Launch Beta","status":"ACTIVE","effective_status":"ACTIVE","objective":"OUTCOME_TRAFFIC"},
+			{"id":"cmp_3","name":"Retarget","status":"PAUSED","effective_status":"PAUSED","objective":"OUTCOME_SALES"}
+		]}`,
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := NewCampaignService(client)
+
+	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", CampaignListInput{
+		AccountID: "act_1234",
+		Fields:    []string{"id", "name", "status"},
+		Name:      "launch",
+		Statuses:  []string{"active"},
+		Limit:     1,
+		PageSize:  25,
+	})
+	if err != nil {
+		t.Fatalf("list campaigns: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_1234/campaigns" {
+		t.Fatalf("unexpected request path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("limit"); got != "25" {
+		t.Fatalf("unexpected page-size query %q", got)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,name,status,effective_status" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+
+	if result.Operation != "list" {
+		t.Fatalf("unexpected operation %q", result.Operation)
+	}
+	if result.RequestPath != "act_1234/campaigns" {
+		t.Fatalf("unexpected request path %q", result.RequestPath)
+	}
+	if len(result.Campaigns) != 1 {
+		t.Fatalf("expected one filtered campaign, got %d", len(result.Campaigns))
+	}
+	first := result.Campaigns[0]
+	if got := first["id"]; got != "cmp_1" {
+		t.Fatalf("unexpected first campaign id %v", got)
+	}
+	if _, exists := first["effective_status"]; exists {
+		t.Fatalf("did not expect hidden filter field in projected output: %v", first)
+	}
+	if result.Paging == nil {
+		t.Fatal("expected paging metadata")
+	}
+}
+
+func TestCampaignListFollowsPaginationWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("after") == "" {
+			payload := map[string]any{
+				"data": []map[string]any{
+					{"id": "cmp_1", "name": "Launch Alpha", "status": "ACTIVE", "effective_status": "ACTIVE"},
+				},
+				"paging": map[string]any{
+					"next": server.URL + "/v25.0/act_1234/campaigns?after=cursor_1",
+				},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Fatalf("encode first page: %v", err)
+			}
+			return
+		}
+		payload := map[string]any{
+			"data": []map[string]any{
+				{"id": "cmp_2", "name": "Launch Beta", "status": "PAUSED", "effective_status": "ACTIVE"},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Fatalf("encode second page: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := NewCampaignService(client)
+
+	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", CampaignListInput{
+		AccountID:  "1234",
+		Fields:     []string{"id", "name"},
+		FollowNext: true,
+		PageSize:   1,
+	})
+	if err != nil {
+		t.Fatalf("list campaigns with pagination: %v", err)
+	}
+	if len(result.Campaigns) != 2 {
+		t.Fatalf("expected two campaigns, got %d", len(result.Campaigns))
+	}
+	if result.Paging == nil {
+		t.Fatal("expected paging metadata")
+	}
+	if got := result.Paging.PagesFetched; got != 2 {
+		t.Fatalf("unexpected pages fetched %d", got)
+	}
+}
+
 func TestCampaignCreateFailsWhenResponseMissingID(t *testing.T) {
 	t.Parallel()
 

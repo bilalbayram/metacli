@@ -2,9 +2,9 @@
   "domain": "marketing",
   "version": "v25.0",
   "entities": {
-    "campaign": ["id", "name", "status", "objective", "daily_budget", "lifetime_budget"],
-    "adset": ["id", "name", "status", "campaign_id", "billing_event", "optimization_goal"],
-    "ad": ["id", "name", "status", "adset_id", "creative"],
+    "campaign": ["id", "name", "status", "effective_status", "objective", "daily_budget", "lifetime_budget"],
+    "adset": ["id", "name", "status", "effective_status", "campaign_id", "billing_event", "optimization_goal", "daily_budget", "lifetime_budget"],
+    "ad": ["id", "name", "status", "effective_status", "campaign_id", "adset_id", "creative"],
     "creative": ["id", "name", "object_story_id", "object_story_spec", "asset_feed_spec"],
     "audience": ["id", "name", "subtype", "description", "time_updated", "retention_days"],
     "catalog": ["id", "name", "vertical", "business"],
@@ -23,7 +23,9 @@
       "after",
       "async"
     ],
-    "campaigns": ["fields", "effective_status", "limit", "after"],
+    "campaigns": ["fields", "effective_status", "limit", "after", "before"],
+    "adsets": ["fields", "effective_status", "limit", "after", "before", "campaign_id"],
+    "ads": ["fields", "effective_status", "limit", "after", "before", "campaign_id", "adset_id"],
     "campaigns.post": [
       "name",
       "status",

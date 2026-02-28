@@ -20,7 +20,7 @@ func TestNewAdsetCommandIncludesLifecycleSubcommands(t *testing.T) {
 
 	cmd := NewAdsetCommand(Runtime{})
 
-	for _, name := range []string{"create", "update", "pause", "resume"} {
+	for _, name := range []string{"list", "create", "update", "pause", "resume"} {
 		sub, _, err := cmd.Find([]string{name})
 		if err != nil {
 			t.Fatalf("find %s subcommand: %v", name, err)
@@ -115,6 +115,147 @@ func TestAdsetCreateExecutesMutationForNonBudgetPayload(t *testing.T) {
 	}
 	if errOutput.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAdsetListExecutesRead(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[
+			{"id":"adset_1","name":"Prospecting A","campaign_id":"cmp_7","status":"PAUSED","effective_status":"ACTIVE"},
+			{"id":"adset_2","name":"Prospecting B","campaign_id":"cmp_7","status":"PAUSED","effective_status":"PAUSED"}
+		]}`,
+	}
+	schemaDir := writeAdsetSchemaPack(t)
+	useAdsetDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAdsetCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "1234",
+		"--campaign-id", "cmp_7",
+		"--fields", "id,campaign_id,status",
+		"--status", "PAUSED",
+		"--active-only",
+		"--page-size", "5",
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute adset list: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/cmp_7/adsets" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,campaign_id,status,name,effective_status" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+	if got := requestURL.Query().Get("limit"); got != "5" {
+		t.Fatalf("unexpected page-size query %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta adset list")
+	data, ok := envelope["data"].([]any)
+	if !ok {
+		t.Fatalf("expected array payload, got %T", envelope["data"])
+	}
+	if len(data) != 1 {
+		t.Fatalf("expected one ad set row, got %d", len(data))
+	}
+	first, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected row object, got %T", data[0])
+	}
+	if got := first["id"]; got != "adset_1" {
+		t.Fatalf("unexpected ad set id %v", got)
+	}
+	if _, ok := envelope["paging"].(map[string]any); !ok {
+		t.Fatalf("expected top-level paging object, got %T", envelope["paging"])
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
+func TestAdsetListFailsOnFieldLint(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeAdsetSchemaPack(t)
+	useAdsetDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAdsetCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"list",
+		"--account-id", "1234",
+		"--fields", "id,unknown_field",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "ad set list field lint failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on list field lint failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta adset list" {
+		t.Fatalf("unexpected command field %v", got)
 	}
 }
 
@@ -742,8 +883,8 @@ func writeAdsetSchemaPack(t *testing.T) string {
 	pack := `{
   "domain":"marketing",
   "version":"v25.0",
-  "entities":{"adset":["id","name","status","campaign_id","billing_event","optimization_goal","daily_budget","lifetime_budget"]},
-  "endpoint_params":{"adsets.post":["name","campaign_id","status","billing_event","optimization_goal","daily_budget","lifetime_budget"]},
+  "entities":{"adset":["id","name","status","effective_status","campaign_id","billing_event","optimization_goal","daily_budget","lifetime_budget"]},
+  "endpoint_params":{"adsets":["fields","effective_status","limit","after","before","campaign_id"],"adsets.post":["name","campaign_id","status","billing_event","optimization_goal","daily_budget","lifetime_budget"]},
   "deprecated_params":{"adsets.post":["legacy_param"]}
 }`
 	if err := os.WriteFile(packPath, []byte(pack), 0o644); err != nil {

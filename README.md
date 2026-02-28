@@ -152,12 +152,40 @@ Notes:
 
 ## Marketing Workflows
 Primary command families:
-- `campaign`: `create`, `update`, `pause`, `resume`, `clone`
-- `adset`: `create`, `update`, `pause`, `resume`
-- `ad`: `create`, `update`, `pause`, `resume`, `clone`
+- `campaign`: `list`, `create`, `update`, `pause`, `resume`, `clone`
+- `adset`: `list`, `create`, `update`, `pause`, `resume`
+- `ad`: `list`, `create`, `update`, `pause`, `resume`, `clone`
 - `creative`: `upload`, `create`
 - `audience`: `create`, `update`, `delete`, `list`, `get`
 - `catalog`: `upload-items`, `batch-items`
+
+Campaign/ad set/ad list examples:
+```bash
+# List campaigns with shared read filters
+./meta --profile prod campaign list \
+  --account-id <AD_ACCOUNT_ID> \
+  --fields id,name,status,effective_status,objective \
+  --name launch \
+  --status ACTIVE,PAUSED \
+  --effective-status ACTIVE \
+  --active-only \
+  --page-size 50 \
+  --follow-next \
+  --limit 100
+
+# List ad sets scoped to one campaign
+./meta --profile prod adset list \
+  --account-id <AD_ACCOUNT_ID> \
+  --campaign-id <CAMPAIGN_ID> \
+  --fields id,name,status,effective_status,campaign_id
+
+# List ads with campaign+adset intersection filtering
+./meta --profile prod ad list \
+  --account-id <AD_ACCOUNT_ID> \
+  --campaign-id <CAMPAIGN_ID> \
+  --adset-id <ADSET_ID> \
+  --fields id,name,status,effective_status,campaign_id,adset_id
+```
 
 Budget mutation guardrail example:
 ```bash
@@ -274,9 +302,9 @@ Auth metadata fields required on every profile in schema v2:
 
 | Command Family | Purpose | Key Commands |
 |---|---|---|
-| `campaign` | Campaign lifecycle | `create`, `update`, `pause`, `resume`, `clone` |
-| `adset` | Ad set lifecycle | `create`, `update`, `pause`, `resume` |
-| `ad` | Ad lifecycle | `create`, `update`, `pause`, `resume`, `clone` |
+| `campaign` | Campaign lifecycle | `list`, `create`, `update`, `pause`, `resume`, `clone` |
+| `adset` | Ad set lifecycle | `list`, `create`, `update`, `pause`, `resume` |
+| `ad` | Ad lifecycle | `list`, `create`, `update`, `pause`, `resume`, `clone` |
 | `creative` | Creative assets | `upload`, `create` |
 | `audience` | Audience lifecycle | `create`, `update`, `delete`, `list`, `get` |
 | `catalog` | Catalog item ingestion/mutation | `upload-items`, `batch-items` |

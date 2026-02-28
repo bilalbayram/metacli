@@ -169,6 +169,76 @@ func TestAdSetSetStatusExecutesStatusMutation(t *testing.T) {
 	}
 }
 
+func TestAdSetListUsesCampaignEdgeAndAppliesIntersectionFilters(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[
+			{"id":"adset_1","name":"Prospecting A","campaign_id":"cmp_7","status":"PAUSED","effective_status":"ACTIVE"},
+			{"id":"adset_2","name":"Prospecting B","campaign_id":"cmp_7","status":"PAUSED","effective_status":"PAUSED"},
+			{"id":"adset_3","name":"Prospecting C","campaign_id":"cmp_8","status":"PAUSED","effective_status":"ACTIVE"}
+		]}`,
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := NewAdSetService(client)
+
+	result, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AdSetListInput{
+		AccountID:  "1234",
+		CampaignID: "cmp_7",
+		Fields:     []string{"id", "campaign_id", "status"},
+		Statuses:   []string{"paused"},
+		ActiveOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("list ad sets: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/cmp_7/adsets" {
+		t.Fatalf("unexpected request path %q", requestURL.Path)
+	}
+	if got := requestURL.Query().Get("fields"); got != "id,campaign_id,status,name,effective_status" {
+		t.Fatalf("unexpected fields query %q", got)
+	}
+
+	if result.Operation != "list" {
+		t.Fatalf("unexpected operation %q", result.Operation)
+	}
+	if result.RequestPath != "cmp_7/adsets" {
+		t.Fatalf("unexpected request path %q", result.RequestPath)
+	}
+	if len(result.AdSets) != 1 {
+		t.Fatalf("expected one ad set, got %d", len(result.AdSets))
+	}
+	if got := result.AdSets[0]["id"]; got != "adset_1" {
+		t.Fatalf("unexpected ad set id %v", got)
+	}
+	if _, exists := result.AdSets[0]["effective_status"]; exists {
+		t.Fatalf("did not expect hidden field in projected row: %v", result.AdSets[0])
+	}
+}
+
+func TestAdSetListRejectsMissingAccountID(t *testing.T) {
+	t.Parallel()
+
+	service := NewAdSetService(graph.NewClient(nil, ""))
+	_, err := service.List(context.Background(), "v25.0", "token-1", "secret-1", AdSetListInput{
+		CampaignID: "cmp_7",
+	})
+	if err == nil {
+		t.Fatal("expected list error")
+	}
+	if !strings.Contains(err.Error(), "account id is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestAdSetResolveAccountIDReadsAdSetContext(t *testing.T) {
 	t.Parallel()
 

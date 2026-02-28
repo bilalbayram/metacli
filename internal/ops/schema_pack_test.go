@@ -77,7 +77,7 @@ func TestCaptureSchemaPackSnapshot(t *testing.T) {
 	if snapshot.Version != "v25.0" {
 		t.Fatalf("unexpected version: %s", snapshot.Version)
 	}
-	if snapshot.SHA256 != "c48d7b1d73a5782df0d2abd91ee907ca71e5827e0c1a2184cfac254094f65be6" {
+	if snapshot.SHA256 != "5771386009d6e3befeb716cbfb17b0d55a541f0e9f024f65b0376e4d4d51f842" {
 		t.Fatalf("unexpected checksum: %s", snapshot.SHA256)
 	}
 }

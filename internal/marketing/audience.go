@@ -34,6 +34,7 @@ type AudienceService struct {
 
 type AudienceCreateInput struct {
 	AccountID string
+	Kind      string
 	Params    map[string]string
 }
 
@@ -211,12 +212,16 @@ func (s *AudienceService) Create(ctx context.Context, version string, token stri
 	if err != nil {
 		return nil, err
 	}
+	kind, err := normalizeAudienceCreateKind(input.Kind)
+	if err != nil {
+		return nil, err
+	}
 	form, err := normalizeAudienceMutationParams(input.Params)
 	if err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("act_%s/customaudiences", accountID)
+	path := fmt.Sprintf("act_%s/%s", accountID, audienceCreateEdge(kind))
 	response, err := s.Client.Do(ctx, graph.Request{
 		Method:      "POST",
 		Path:        path,
@@ -354,6 +359,29 @@ func normalizeAudienceReadFields(fields []string) ([]string, error) {
 		return nil, errors.New("audience fields are required when fields filter is set")
 	}
 	return normalized, nil
+}
+
+func normalizeAudienceCreateKind(kind string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", AudienceListKindCustom:
+		return AudienceListKindCustom, nil
+	case AudienceListKindSaved:
+		return AudienceListKindSaved, nil
+	default:
+		return "", fmt.Errorf(
+			"audience create kind must be one of [%s %s], got %q",
+			AudienceListKindCustom,
+			AudienceListKindSaved,
+			kind,
+		)
+	}
+}
+
+func audienceCreateEdge(kind string) string {
+	if kind == AudienceListKindSaved {
+		return audienceListEdgeSaved
+	}
+	return audienceListEdgeCustom
 }
 
 func normalizeAudienceListKind(kind string) (string, error) {

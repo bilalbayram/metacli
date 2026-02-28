@@ -75,6 +75,7 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 		profile      string
 		version      string
 		accountID    string
+		kind         string
 		paramsRaw    string
 		jsonRaw      string
 		schemaDir    string
@@ -83,7 +84,7 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a custom audience",
+		Short: "Create an audience",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateDomainGatePolicy(domainPolicy); err != nil {
@@ -114,16 +115,23 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 				return writeCommandError(cmd, runtime, "meta audience create", err)
 			}
 
-			linter, err := newAudienceMutationLinter(creds, resolvedVersion, schemaDir)
+			normalizedKind, err := normalizeAudienceCreateCommandKind(kind)
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta audience create", err)
 			}
-			if err := lintAudienceMutation(linter, form); err != nil {
-				return writeCommandError(cmd, runtime, "meta audience create", err)
+			if normalizedKind == marketing.AudienceListKindCustom {
+				linter, err := newAudienceMutationLinter(creds, resolvedVersion, schemaDir)
+				if err != nil {
+					return writeCommandError(cmd, runtime, "meta audience create", err)
+				}
+				if err := lintAudienceMutation(linter, form); err != nil {
+					return writeCommandError(cmd, runtime, "meta audience create", err)
+				}
 			}
 
 			result, err := audienceNewService(audienceNewGraphClient()).Create(cmd.Context(), resolvedVersion, creds.Token, creds.AppSecret, marketing.AudienceCreateInput{
 				AccountID: accountID,
+				Kind:      normalizedKind,
 				Params:    form,
 			})
 			if err != nil {
@@ -151,6 +159,7 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
+	cmd.Flags().StringVar(&kind, "kind", marketing.AudienceListKindCustom, "Audience kind for create: custom|saved")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
 	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
@@ -458,6 +467,22 @@ func lintAudienceMutation(linter *lint.Linter, params map[string]string) error {
 		return fmt.Errorf("audience mutation lint failed with %d error(s): %s", len(result.Errors), strings.Join(result.Errors, "; "))
 	}
 	return nil
+}
+
+func normalizeAudienceCreateCommandKind(kind string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", marketing.AudienceListKindCustom:
+		return marketing.AudienceListKindCustom, nil
+	case marketing.AudienceListKindSaved:
+		return marketing.AudienceListKindSaved, nil
+	default:
+		return "", fmt.Errorf(
+			"audience create kind must be one of [%s %s], got %q",
+			marketing.AudienceListKindCustom,
+			marketing.AudienceListKindSaved,
+			kind,
+		)
+	}
 }
 
 type domainGateStatus struct {

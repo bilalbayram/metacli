@@ -64,6 +64,49 @@ func TestAudienceCreateExecutesGraphMutation(t *testing.T) {
 	}
 }
 
+func TestAudienceCreateExecutesSavedAudienceMutation(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"id":"saved_100","name":"Saved Audience"}`,
+	}
+	client := graph.NewClient(stub, "https://graph.example.com")
+	client.MaxRetries = 0
+	service := NewAudienceService(client)
+
+	result, err := service.Create(context.Background(), "v25.0", "token-1", "secret-1", AudienceCreateInput{
+		AccountID: "act_1234",
+		Kind:      AudienceListKindSaved,
+		Params: map[string]string{
+			"name":      "Saved Audience",
+			"targeting": `{"geo_locations":{"countries":["US"]}}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create saved audience: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_1234/saved_audiences" {
+		t.Fatalf("unexpected request path %q", requestURL.Path)
+	}
+
+	if result.Operation != "create" {
+		t.Fatalf("unexpected operation %q", result.Operation)
+	}
+	if result.AudienceID != "saved_100" {
+		t.Fatalf("unexpected audience id %q", result.AudienceID)
+	}
+	if result.RequestPath != "act_1234/saved_audiences" {
+		t.Fatalf("unexpected request path %q", result.RequestPath)
+	}
+}
+
 func TestAudienceUpdateExecutesGraphMutation(t *testing.T) {
 	t.Parallel()
 
@@ -171,6 +214,25 @@ func TestAudienceCreateFailsWhenResponseMissingID(t *testing.T) {
 		t.Fatal("expected create error")
 	}
 	if !strings.Contains(err.Error(), "did not include id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAudienceCreateRejectsInvalidKind(t *testing.T) {
+	t.Parallel()
+
+	service := NewAudienceService(graph.NewClient(nil, ""))
+	_, err := service.Create(context.Background(), "v25.0", "token-1", "secret-1", AudienceCreateInput{
+		AccountID: "1234",
+		Kind:      "unsupported",
+		Params: map[string]string{
+			"name": "Audience",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected create error")
+	}
+	if !strings.Contains(err.Error(), "audience create kind must be one of [custom saved]") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

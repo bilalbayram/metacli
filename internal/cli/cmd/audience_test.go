@@ -107,6 +107,85 @@ func TestAudienceCreateExecutesMutation(t *testing.T) {
 	}
 }
 
+func TestAudienceCreateExecutesSavedMutation(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"id":"saved_991","name":"Saved Test"}`,
+	}
+	schemaDir := writeAudienceSchemaPack(t)
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "act_1234",
+		"--kind", "saved",
+		"--json", `{"name":"Saved Test","targeting":{"geo_locations":{"countries":["US"]}}}`,
+		"--schema-dir", schemaDir,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute audience create saved: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if requestURL.Path != "/v25.0/act_1234/saved_audiences" {
+		t.Fatalf("unexpected path %q", requestURL.Path)
+	}
+	form, err := url.ParseQuery(stub.lastBody)
+	if err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if got := form.Get("name"); got != "Saved Test" {
+		t.Fatalf("unexpected name %q", got)
+	}
+	if got := form.Get("targeting"); got == "" {
+		t.Fatal("expected targeting payload")
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta audience create")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["audience_id"]; got != "saved_991" {
+		t.Fatalf("unexpected audience_id %v", got)
+	}
+	if got := data["request_path"]; got != "act_1234/saved_audiences" {
+		t.Fatalf("unexpected request_path %v", got)
+	}
+	if errOutput.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", errOutput.String())
+	}
+}
+
 func TestAudienceCreateFailsLintValidation(t *testing.T) {
 	wasCalled := false
 	schemaDir := writeAudienceSchemaPack(t)
@@ -150,6 +229,60 @@ func TestAudienceCreateFailsLintValidation(t *testing.T) {
 	}
 	if wasCalled {
 		t.Fatal("graph client should not execute on lint failure")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", output.String())
+	}
+	envelope := decodeEnvelope(t, errOutput.Bytes())
+	if got := envelope["command"]; got != "meta audience create" {
+		t.Fatalf("unexpected command field %v", got)
+	}
+}
+
+func TestAudienceCreateFailsInvalidKind(t *testing.T) {
+	wasCalled := false
+	schemaDir := writeAudienceSchemaPack(t)
+	useAudienceDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name: "prod",
+				Profile: config.Profile{
+					Domain:       config.DefaultDomain,
+					GraphVersion: config.DefaultGraphVersion,
+				},
+				Token: "test-token",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewAudienceCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
+	cmd.SetArgs([]string{
+		"create",
+		"--account-id", "1234",
+		"--kind", "unsupported",
+		"--params", "name=VIP",
+		"--schema-dir", schemaDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	if !strings.Contains(err.Error(), "audience create kind must be one of [custom saved]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not execute on invalid kind")
 	}
 	if output.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", output.String())

@@ -28,8 +28,8 @@ func NewCatalogCommand(runtime Runtime) *cobra.Command {
 	catalogCmd := &cobra.Command{
 		Use:   "catalog",
 		Short: "Catalog item upload and batch workflows",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("catalog requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "catalog")
 		},
 	}
 	catalogCmd.AddCommand(newCatalogUploadItemsCommand(runtime))

@@ -72,8 +72,8 @@ func NewAdsetCommand(runtime Runtime) *cobra.Command {
 	adsetCmd := &cobra.Command{
 		Use:   "adset",
 		Short: "Ad set lifecycle commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("adset requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "adset")
 		},
 	}
 	adsetCmd.AddCommand(newAdsetListCommand(runtime))

@@ -47,8 +47,8 @@ func NewCampaignCommand(runtime Runtime) *cobra.Command {
 	campaignCmd := &cobra.Command{
 		Use:   "campaign",
 		Short: "Campaign lifecycle commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("campaign requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "campaign")
 		},
 	}
 	campaignCmd.AddCommand(newCampaignCreateCommand(runtime))

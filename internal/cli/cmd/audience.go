@@ -58,8 +58,8 @@ func NewAudienceCommand(runtime Runtime) *cobra.Command {
 	audienceCmd := &cobra.Command{
 		Use:   "audience",
 		Short: "Audience lifecycle commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("audience requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "audience")
 		},
 	}
 	audienceCmd.AddCommand(newAudienceCreateCommand(runtime))

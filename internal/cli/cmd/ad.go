@@ -35,8 +35,8 @@ func NewAdCommand(runtime Runtime) *cobra.Command {
 	adCmd := &cobra.Command{
 		Use:   "ad",
 		Short: "Ad lifecycle commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("ad requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "ad")
 		},
 	}
 	adCmd.AddCommand(newAdListCommand(runtime))

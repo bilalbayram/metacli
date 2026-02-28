@@ -36,8 +36,8 @@ func NewCreativeCommand(runtime Runtime) *cobra.Command {
 	creativeCmd := &cobra.Command{
 		Use:   "creative",
 		Short: "Creative upload and create workflows",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("creative requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "creative")
 		},
 	}
 	creativeCmd.AddCommand(newCreativeUploadCommand(runtime))

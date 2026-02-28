@@ -133,8 +133,8 @@ func newNamespaceBootstrapManifest(runtime Runtime, spec namespaceBootstrapSpec)
 			namespaceCmd := &cobra.Command{
 				Use:   spec.Namespace,
 				Short: spec.Short,
-				RunE: func(_ *cobra.Command, _ []string) error {
-					return fmt.Errorf("%s requires a subcommand", spec.Namespace)
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					return requireSubcommand(cmd, spec.Namespace)
 				},
 			}
 			namespaceCmd.AddCommand(newNamespaceHealthCommand(runtime, pluginRuntime, spec))

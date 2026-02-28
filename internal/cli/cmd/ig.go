@@ -45,8 +45,8 @@ func newIGPluginManifest(runtime Runtime) plugin.Manifest {
 			igCmd := &cobra.Command{
 				Use:   igNamespace,
 				Short: "Instagram Graph commands",
-				RunE: func(_ *cobra.Command, _ []string) error {
-					return errors.New("ig requires a subcommand")
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					return requireSubcommand(cmd, igNamespace)
 				},
 			}
 			igCmd.AddCommand(newIGHealthCommand(runtime, pluginRuntime))
@@ -84,8 +84,8 @@ func newIGMediaCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Com
 	mediaCmd := &cobra.Command{
 		Use:   "media",
 		Short: "Instagram media upload and status commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("ig media requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "ig media")
 		},
 	}
 	mediaCmd.AddCommand(newIGMediaUploadCommand(runtime, pluginRuntime))
@@ -97,8 +97,8 @@ func newIGCaptionCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.C
 	captionCmd := &cobra.Command{
 		Use:   "caption",
 		Short: "Instagram caption validation commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("ig caption requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "ig caption")
 		},
 	}
 	captionCmd.AddCommand(newIGCaptionValidateCommand(runtime, pluginRuntime))
@@ -109,8 +109,8 @@ func newIGPublishCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.C
 	publishCmd := &cobra.Command{
 		Use:   "publish",
 		Short: "Instagram publishing commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("ig publish requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "ig publish")
 		},
 	}
 	publishCmd.AddCommand(newIGPublishFeedCommand(runtime, pluginRuntime))
@@ -445,8 +445,8 @@ func newIGPublishScheduleCommand(runtime Runtime, pluginRuntime plugin.Runtime) 
 	scheduleCmd := &cobra.Command{
 		Use:   "schedule",
 		Short: "Instagram publish schedule lifecycle commands",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("ig publish schedule requires a subcommand")
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return requireSubcommand(cmd, "ig publish schedule")
 		},
 	}
 	scheduleCmd.AddCommand(newIGPublishScheduleListCommand(runtime, pluginRuntime))

@@ -9,6 +9,8 @@ import (
 
 const appName = "meta"
 
+var Version = "v1.0.5"
+
 type GlobalFlags struct {
 	Profile string
 	Output  string
@@ -35,6 +37,7 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&flags.Profile, "profile", "", "Auth profile name")
 	cmd.PersistentFlags().StringVar(&flags.Output, "output", "json", "Output format: json|jsonl|table|csv")
 	cmd.PersistentFlags().BoolVar(&flags.Debug, "debug", false, "Enable debug logging")
+	configureVersionFlag(cmd)
 
 	runtime := command.Runtime{
 		Profile: &flags.Profile,
@@ -65,6 +68,23 @@ func NewRootCommand() *cobra.Command {
 	cmd.AddCommand(command.NewCatalogCommand(runtime))
 
 	return cmd
+}
+
+func configureVersionFlag(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+
+	cmd.Version = Version
+	cmd.SetVersionTemplate("{{.Version}}\n")
+	cmd.InitDefaultVersionFlag()
+
+	versionFlag := cmd.Flags().Lookup("version")
+	if versionFlag == nil {
+		return
+	}
+	versionFlag.Shorthand = "v"
+	versionFlag.Usage = "Print the CLI version"
 }
 
 func validateGlobalFlags(flags *GlobalFlags) func(*cobra.Command, []string) error {

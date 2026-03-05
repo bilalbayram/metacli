@@ -708,7 +708,7 @@ func newAuthDebugTokenCommand(runtime Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				tokenStore := auth.NewKeychainStore()
+				tokenStore := auth.NewSecretStore()
 				token, err = tokenStore.Get(selected.TokenRef)
 				if err != nil {
 					return err
@@ -1053,7 +1053,7 @@ func newAuthService() (authCLIService, error) {
 	if err != nil {
 		return nil, err
 	}
-	return auth.NewService(cfgPath, auth.NewKeychainStore(), nil, auth.DefaultGraphBaseURL), nil
+	return auth.NewService(cfgPath, auth.NewSecretStore(), nil, auth.DefaultGraphBaseURL), nil
 }
 
 func mustMarkFlagRequired(cmd *cobra.Command, name string) {

@@ -42,7 +42,7 @@ func loadProfileCredentials(profile string) (*ProfileCredentials, error) {
 		return nil, fmt.Errorf("auth preflight failed for profile %q: %w", name, err)
 	}
 
-	store := auth.NewKeychainStore()
+	store := auth.NewSecretStore()
 	token, err := store.Get(selected.TokenRef)
 	if err != nil {
 		return nil, err
@@ -71,7 +71,7 @@ func runProfileAuthPreflight(profile string, requiredScopes []string, configPath
 		return errors.New("config path is required")
 	}
 
-	svc := auth.NewService(configPath, auth.NewKeychainStore(), nil, auth.DefaultGraphBaseURL)
+	svc := auth.NewService(configPath, auth.NewSecretStore(), nil, auth.DefaultGraphBaseURL)
 	if _, err := svc.EnsureValid(context.Background(), profile, 72*time.Hour, requiredScopes); err != nil {
 		return err
 	}

@@ -83,12 +83,6 @@ func TestSubcommandRequiredErrorsPrintHelp(t *testing.T) {
 			usagePrefix: "meta ig publish schedule",
 		},
 		{
-			name:        "doctor",
-			args:        []string{"doctor"},
-			errorString: "doctor requires a subcommand",
-			usagePrefix: "meta doctor",
-		},
-		{
 			name:        "wa",
 			args:        []string{"wa"},
 			errorString: "wa requires a subcommand",

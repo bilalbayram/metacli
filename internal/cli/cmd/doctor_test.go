@@ -192,17 +192,32 @@ func TestDoctorTracerFailsClosedWhenTracerIsMissing(t *testing.T) {
 	}
 }
 
-func TestDoctorCommandFailsWithoutSubcommand(t *testing.T) {
-	cmd := NewDoctorCommand(Runtime{})
+func TestDoctorCommandRunsHealthChecks(t *testing.T) {
+	output := &bytes.Buffer{}
+	errOutput := &bytes.Buffer{}
+	cmd := NewDoctorCommand(Runtime{Output: stringPtr("json")})
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
+	cmd.SetOut(output)
+	cmd.SetErr(errOutput)
 	cmd.SetArgs([]string{})
 
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected command error")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "doctor requires a subcommand") {
-		t.Fatalf("unexpected error: %v", err)
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta doctor")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %T", envelope["data"])
+	}
+	status, ok := data["status"].(string)
+	if !ok {
+		t.Fatalf("expected status string, got %T", data["status"])
+	}
+	if status != "healthy" && status != "degraded" && status != "unhealthy" {
+		t.Fatalf("unexpected status %q", status)
 	}
 }

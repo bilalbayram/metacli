@@ -60,7 +60,7 @@ func newDoctorPluginManifest(runtime Runtime, tracer *plugin.NamespaceTracer) pl
 				Use:   doctorNamespace,
 				Short: "Doctor diagnostics commands",
 				RunE: func(cmd *cobra.Command, _ []string) error {
-					return requireSubcommand(cmd, doctorNamespace)
+					return runDoctorChecks(cmd, runtime, nil)
 				},
 			}
 			doctorCmd.AddCommand(newDoctorTracerCommand(runtime, pluginRuntime, tracer))

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	command "github.com/bilalbayram/metacli/internal/cli/cmd"
 	"github.com/spf13/cobra"
@@ -9,7 +10,18 @@ import (
 
 const appName = "meta"
 
-var Version = "v1.0.5"
+// Version is set via ldflags by GoReleaser. When installed with
+// "go install", it falls back to the module version embedded by Go.
+var Version = "dev"
+
+func init() {
+	if Version != "dev" {
+		return
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		Version = info.Main.Version
+	}
+}
 
 type GlobalFlags struct {
 	Profile string

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultSchemaDir      = "schema-packs"
+	DefaultSchemaDirName  = "schema-packs"
 	DefaultManifestURL    = "https://raw.githubusercontent.com/bilalbayram/meta-marketing-cli-schema/main/stable/manifest.json"
 	DefaultManifestPubKey = "Kwd20b0Rgz10RMMmLz57ShQ4m6fNnYw11f3UrhJ5j7A="
 
@@ -125,9 +125,7 @@ type commitRecord struct {
 }
 
 func NewProvider(baseDir string, manifestURL string, publicKey string) *Provider {
-	if strings.TrimSpace(baseDir) == "" {
-		baseDir = DefaultSchemaDir
-	}
+	baseDir = normalizeBaseDir(baseDir)
 	if strings.TrimSpace(manifestURL) == "" {
 		manifestURL = DefaultManifestURL
 	}
@@ -142,6 +140,37 @@ func NewProvider(baseDir string, manifestURL string, publicKey string) *Provider
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+func defaultSchemaDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return DefaultSchemaDirName
+	}
+	return filepath.Join(home, ".meta", DefaultSchemaDirName)
+}
+
+func DefaultSchemaDir() string {
+	return defaultSchemaDir()
+}
+
+func normalizeBaseDir(baseDir string) string {
+	trimmed := strings.TrimSpace(baseDir)
+	switch {
+	case trimmed == "":
+		return DefaultSchemaDir()
+	case trimmed == "~":
+		home, err := os.UserHomeDir()
+		if err == nil && strings.TrimSpace(home) != "" {
+			return home
+		}
+	case strings.HasPrefix(trimmed, "~/"):
+		home, err := os.UserHomeDir()
+		if err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, trimmed[2:])
+		}
+	}
+	return trimmed
 }
 
 func NormalizeRemoteFailurePolicy(policy string) string {

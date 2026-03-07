@@ -94,22 +94,21 @@ Official docs:
 ```
 
 ## Ad Creation
+Schema-aware commands look in `~/.meta/schema-packs` by default. Run `./meta schema sync` first if you have not populated that directory yet.
+
 ```bash
 ./meta --profile prod campaign create \
   --account-id <AD_ACCOUNT_ID> \
-  --params "name=Launch Campaign,objective=OUTCOME_SALES,status=PAUSED" \
-  --schema-dir ./schema-packs
+  --params "name=Launch Campaign,objective=OUTCOME_SALES,status=PAUSED"
 
 ./meta --profile prod adset create \
   --account-id <AD_ACCOUNT_ID> \
-  --params "name=Prospecting,campaign_id=<CAMPAIGN_ID>,status=PAUSED,billing_event=IMPRESSIONS,optimization_goal=OFFSITE_CONVERSIONS" \
-  --schema-dir ./schema-packs
+  --params "name=Prospecting,campaign_id=<CAMPAIGN_ID>,status=PAUSED,billing_event=IMPRESSIONS,optimization_goal=OFFSITE_CONVERSIONS"
 
 ./meta --profile prod ad create \
   --account-id <AD_ACCOUNT_ID> \
   --params "name=Launch Ad,adset_id=<ADSET_ID>,status=PAUSED" \
-  --json '{"creative":{"creative_id":"<CREATIVE_ID>"}}' \
-  --schema-dir ./schema-packs
+  --json '{"creative":{"creative_id":"<CREATIVE_ID>"}}'
 ```
 
 ## Insights Reporting
@@ -271,11 +270,14 @@ Audience read examples:
 # 1) Automated auth
 ./meta auth setup --profile prod --app-id <APP_ID> --app-secret <APP_SECRET> --mode both --scope-pack solo_smb
 
+# 1.5) Sync schema packs into ~/.meta/schema-packs
+./meta schema sync
+
 # 2) Create campaign + ad set + creative + ad
-./meta --profile prod campaign create --account-id <AD_ACCOUNT_ID> --params "name=CLI Campaign,objective=OUTCOME_SALES,status=PAUSED" --schema-dir ./schema-packs
-./meta --profile prod adset create --account-id <AD_ACCOUNT_ID> --params "name=CLI AdSet,campaign_id=<CAMPAIGN_ID>,status=PAUSED,billing_event=IMPRESSIONS,optimization_goal=OFFSITE_CONVERSIONS" --schema-dir ./schema-packs
-./meta --profile prod creative create --account-id <AD_ACCOUNT_ID> --params "name=CLI Creative,object_story_id=123_456" --schema-dir ./schema-packs
-./meta --profile prod ad create --account-id <AD_ACCOUNT_ID> --params "name=CLI Ad,adset_id=<ADSET_ID>,status=PAUSED" --json '{"creative":{"creative_id":"<CREATIVE_ID>"}}' --schema-dir ./schema-packs
+./meta --profile prod campaign create --account-id <AD_ACCOUNT_ID> --params "name=CLI Campaign,objective=OUTCOME_SALES,status=PAUSED"
+./meta --profile prod adset create --account-id <AD_ACCOUNT_ID> --params "name=CLI AdSet,campaign_id=<CAMPAIGN_ID>,status=PAUSED,billing_event=IMPRESSIONS,optimization_goal=OFFSITE_CONVERSIONS"
+./meta --profile prod creative create --account-id <AD_ACCOUNT_ID> --params "name=CLI Creative,object_story_id=123_456"
+./meta --profile prod ad create --account-id <AD_ACCOUNT_ID> --params "name=CLI Ad,adset_id=<ADSET_ID>,status=PAUSED" --json '{"creative":{"creative_id":"<CREATIVE_ID>"}}'
 
 # 3) Publish IG content
 ./meta --profile prod ig publish feed --media-url https://cdn.example.com/launch.jpg --caption "Shipped from CLI" --idempotency-key launch-feed-001

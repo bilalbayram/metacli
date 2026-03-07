@@ -318,26 +318,18 @@ func captureRateLimitTelemetrySnapshot() (RateLimitTelemetrySnapshot, error) {
 }
 
 func resolveSchemaPackSnapshotSource(domain string, version string) (string, error) {
-	relative := filepath.Join(schema.DefaultSchemaDir, domain, version+".json")
-	wd, err := os.Getwd()
+	path := filepath.Join(schema.DefaultSchemaDir(), domain, version+".json")
+	info, err := os.Stat(path)
+	if err == nil && !info.IsDir() {
+		return path, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("schema pack snapshot source not found for %s/%s at %s", domain, version, path)
+	}
 	if err != nil {
-		return "", fmt.Errorf("resolve working directory for schema pack snapshot source: %w", err)
+		return "", fmt.Errorf("stat schema pack snapshot source %s: %w", path, err)
 	}
-
-	current := wd
-	for {
-		candidate := filepath.Join(current, relative)
-		info, statErr := os.Stat(candidate)
-		if statErr == nil && !info.IsDir() {
-			return candidate, nil
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
-	}
-	return "", fmt.Errorf("schema pack snapshot source not found for %s/%s at %s", domain, version, relative)
+	return "", fmt.Errorf("schema pack snapshot source is a directory at %s", path)
 }
 
 func validateUsagePercent(name string, value int) error {

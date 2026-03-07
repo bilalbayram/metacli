@@ -162,7 +162,7 @@ func newAudienceCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&kind, "kind", marketing.AudienceListKindCustom, "Audience kind for create: custom|saved")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }
@@ -236,7 +236,7 @@ func newAudienceUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&audienceID, "audience-id", "", "Audience id")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&domainPolicy, "domain-policy", domainGatePolicyStrict, "Domain gating policy for non-marketing profiles: strict|skip")
 	return cmd
 }

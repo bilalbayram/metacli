@@ -29,7 +29,7 @@ func newSchemaListCommand(runtime Runtime) *cobra.Command {
 			return writeSuccess(cmd, runtime, "meta schema list", packs, nil, nil)
 		},
 	}
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }
 
@@ -60,7 +60,7 @@ func newSchemaSyncCommand(runtime Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&channel, "channel", "stable", "Schema channel to sync")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&manifestURL, "manifest-url", schema.DefaultManifestURL, "Signed schema manifest URL")
 	cmd.Flags().StringVar(&publicKey, "public-key", schema.DefaultManifestPubKey, "Base64 Ed25519 public key for manifest verification")
 	cmd.Flags().StringVar(

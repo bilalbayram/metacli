@@ -22,10 +22,10 @@ func NewLintCommand(runtime Runtime) *cobra.Command {
 
 func newLintRequestCommand(runtime Runtime) *cobra.Command {
 	var (
-		filePath string
-		profile  string
-		version  string
-		strict   bool
+		filePath  string
+		profile   string
+		version   string
+		strict    bool
 		schemaDir string
 	)
 	cmd := &cobra.Command{
@@ -81,6 +81,6 @@ func newLintRequestCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat unknown fields/params as errors")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }

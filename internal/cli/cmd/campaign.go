@@ -178,7 +178,7 @@ func newCampaignCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Resolve requirements and output plan without executing mutation")
@@ -274,7 +274,7 @@ func newCampaignResolveRequirementsCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	return cmd
 }
@@ -348,7 +348,7 @@ func newCampaignListCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of campaigns to return after filtering")
 	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Graph page size for campaign reads")
 	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }
 
@@ -434,7 +434,7 @@ func newCampaignUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign id")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
@@ -490,7 +490,7 @@ func newCampaignStatusCommand(runtime Runtime, operation string, status string) 
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&campaignID, "campaign-id", "", "Campaign id")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }
 
@@ -643,7 +643,7 @@ func newCampaignCloneCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&fieldsRaw, "fields", strings.Join(marketing.DefaultCampaignCloneFields, ","), "Comma-separated fields to read from source campaign")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated override params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object overrides")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "Runtime rule pack root directory override")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Resolve clone requirements and output plan without executing mutation")
 	cmd.Flags().BoolVar(&dryRun, "plan", false, "Alias of --dry-run")

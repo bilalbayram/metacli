@@ -1,6 +1,10 @@
 package ops
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -65,7 +69,17 @@ func TestEvaluateSchemaPackDriftFailsWhenSnapshotChanges(t *testing.T) {
 }
 
 func TestCaptureSchemaPackSnapshot(t *testing.T) {
-	t.Parallel()
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	packPath := filepath.Join(tempHome, ".meta", "schema-packs", "marketing", "v25.0.json")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		t.Fatalf("create schema pack directory: %v", err)
+	}
+	pack := []byte(`{"domain":"marketing","version":"v25.0","entities":{"campaign":["id","name"]}}`)
+	if err := os.WriteFile(packPath, pack, 0o644); err != nil {
+		t.Fatalf("write schema pack: %v", err)
+	}
+	sum := sha256.Sum256(pack)
 
 	snapshot, err := captureSchemaPackSnapshot()
 	if err != nil {
@@ -77,7 +91,7 @@ func TestCaptureSchemaPackSnapshot(t *testing.T) {
 	if snapshot.Version != "v25.0" {
 		t.Fatalf("unexpected version: %s", snapshot.Version)
 	}
-	if snapshot.SHA256 != "5771386009d6e3befeb716cbfb17b0d55a541f0e9f024f65b0376e4d4d51f842" {
+	if snapshot.SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("unexpected checksum: %s", snapshot.SHA256)
 	}
 }

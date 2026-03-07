@@ -160,7 +160,7 @@ func newAdsetListCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of ad sets to return after filtering")
 	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Graph page size for ad set reads")
 	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow paging.next links")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }
 
@@ -247,7 +247,7 @@ func newAdsetCreateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id (with or without act_ prefix)")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
 }
@@ -321,7 +321,7 @@ func newAdsetUpdateCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&adSetID, "adset-id", "", "Ad set id")
 	cmd.Flags().StringVar(&paramsRaw, "params", "", "Comma-separated mutation params (k=v,k2=v2)")
 	cmd.Flags().StringVar(&jsonRaw, "json", "", "Inline JSON object payload")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	cmd.Flags().BoolVar(&confirmBudgetChange, "confirm-budget-change", false, "Acknowledge budget mutation fields (daily_budget/lifetime_budget)")
 	return cmd
 }
@@ -376,7 +376,7 @@ func newAdsetStatusCommand(runtime Runtime, operation string, status string) *co
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	cmd.Flags().StringVar(&adSetID, "adset-id", "", "Ad set id")
-	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir, "Schema pack root directory")
+	cmd.Flags().StringVar(&schemaDir, "schema-dir", schema.DefaultSchemaDir(), "Schema pack root directory")
 	return cmd
 }
 

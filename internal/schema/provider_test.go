@@ -17,6 +17,17 @@ import (
 	"testing"
 )
 
+func TestNewProviderDefaultsToHomeSchemaDir(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	provider := NewProvider("", "", "")
+	want := filepath.Join(tempHome, ".meta", "schema-packs")
+	if provider.BaseDir != want {
+		t.Fatalf("unexpected default base dir: got=%s want=%s", provider.BaseDir, want)
+	}
+}
+
 func TestSyncVerifiesManifestAndWritesPack(t *testing.T) {
 	t.Parallel()
 

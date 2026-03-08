@@ -333,13 +333,6 @@ func namespaceCommandCases() []namespaceCommandCase {
 			newCommand:             NewWACommand,
 		},
 		{
-			namespace:              "msgr",
-			pluginID:               "messenger",
-			supportedCapability:    "send-api",
-			discoveredCapabilities: []string{"send-api", "webhook"},
-			newCommand:             NewMSGRCommand,
-		},
-		{
 			namespace:              "threads",
 			pluginID:               "threads",
 			supportedCapability:    "publish-post",

@@ -2,9 +2,11 @@ package ig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -902,5 +904,100 @@ func TestServiceUploadFailsWhenResponseMissingCreationID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not include id") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildConversationReplyRequestEscapesJSONPayloads(t *testing.T) {
+	t.Parallel()
+
+	req, err := BuildConversationReplyRequest("v25.0", "token-1", "secret-1", ConversationReplyOptions{
+		IGUserID:    "17841400008460056",
+		RecipientID: "ig_user_456",
+		Message:     "He said \"hi\"\nand sent a slash \\",
+	})
+	if err != nil {
+		t.Fatalf("build conversation reply request: %v", err)
+	}
+
+	var recipient struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(req.Form["recipient"]), &recipient); err != nil {
+		t.Fatalf("decode recipient payload: %v", err)
+	}
+	if recipient.ID != "ig_user_456" {
+		t.Fatalf("unexpected recipient id %q", recipient.ID)
+	}
+
+	var message struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(req.Form["message"]), &message); err != nil {
+		t.Fatalf("decode message payload: %v", err)
+	}
+	if message.Text != "He said \"hi\"\nand sent a slash \\" {
+		t.Fatalf("unexpected message text %q", message.Text)
+	}
+}
+
+func TestServiceListConversationsFollowsNextPages(t *testing.T) {
+	t.Parallel()
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v25.0/17841400008460056/conversations" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("after") == "" {
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": "conv_1"},
+					{"id": "conv_2"},
+				},
+				"paging": map[string]any{
+					"next": server.URL + "/v25.0/17841400008460056/conversations?after=cursor_1",
+				},
+			}); err != nil {
+				t.Fatalf("encode first page: %v", err)
+			}
+			return
+		}
+
+		if got := r.URL.Query().Get("after"); got != "cursor_1" {
+			t.Fatalf("unexpected after cursor %q", got)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "conv_3"},
+			},
+		}); err != nil {
+			t.Fatalf("encode second page: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	client.MaxRetries = 0
+	service := New(client)
+
+	result, err := service.ListConversations(context.Background(), "v25.0", "token-1", "secret-1", ConversationListOptions{
+		IGUserID: "17841400008460056",
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("list conversations: %v", err)
+	}
+
+	if len(result.Conversations) != 3 {
+		t.Fatalf("expected 3 conversations, got %d", len(result.Conversations))
+	}
+	if result.Pagination == nil {
+		t.Fatal("expected pagination metadata")
+	}
+	if result.Pagination.PagesFetched != 2 {
+		t.Fatalf("expected 2 pages fetched, got %d", result.Pagination.PagesFetched)
+	}
+	if result.Pagination.ItemsFetched != 3 {
+		t.Fatalf("expected 3 items fetched, got %d", result.Pagination.ItemsFetched)
 	}
 }

@@ -53,6 +53,7 @@ func newIGPluginManifest(runtime Runtime) plugin.Manifest {
 			igCmd.AddCommand(newIGMediaCommand(runtime, pluginRuntime))
 			igCmd.AddCommand(newIGCaptionCommand(runtime, pluginRuntime))
 			igCmd.AddCommand(newIGPublishCommand(runtime, pluginRuntime))
+			igCmd.AddCommand(newIGConversationsCommand(runtime, pluginRuntime))
 			return igCmd, nil
 		},
 	}

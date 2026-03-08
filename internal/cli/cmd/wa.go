@@ -39,15 +39,6 @@ var builtinNamespaceBootstrapSpecs = []namespaceBootstrapSpec{
 		},
 	},
 	{
-		PluginID:  "messenger",
-		Namespace: "msgr",
-		Short:     "Messenger Platform commands",
-		Capabilities: []namespaceCapability{
-			{Name: "send-api", Description: "Send messages through the Messenger Send API"},
-			{Name: "webhook", Description: "Consume Messenger webhook events"},
-		},
-	},
-	{
 		PluginID:  "threads",
 		Namespace: "threads",
 		Short:     "Threads API commands",

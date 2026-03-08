@@ -72,10 +72,10 @@ func TestDoctorTracerWritesSuccessEnvelope(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected discoveries array, got %T", data["discoveries"])
 	}
-	if got := len(discoveries); got != 4 {
+	if got := len(discoveries); got != 3 {
 		t.Fatalf("unexpected discovery size %d", got)
 	}
-	if got := int(data["namespace_count"].(float64)); got != 4 {
+	if got := int(data["namespace_count"].(float64)); got != 3 {
 		t.Fatalf("unexpected namespace_count %v", data["namespace_count"])
 	}
 
@@ -83,7 +83,7 @@ func TestDoctorTracerWritesSuccessEnvelope(t *testing.T) {
 	for _, tc := range namespaceCommandCases() {
 		expected[tc.namespace] = tc.discoveredCapabilities
 	}
-	expectedNamespaces := []string{"capi", "msgr", "threads", "wa"}
+	expectedNamespaces := []string{"capi", "threads", "wa"}
 	for idx, raw := range discoveries {
 		discovery, ok := raw.(map[string]any)
 		if !ok {

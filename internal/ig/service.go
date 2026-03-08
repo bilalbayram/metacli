@@ -2,6 +2,7 @@ package ig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -432,6 +433,151 @@ func ensureMediaReadyForPublish(result *MediaStatusResult) error {
 		return newMediaNotReadyError(statusCode)
 	}
 	return nil
+}
+
+type ConversationListOptions struct {
+	IGUserID string
+	Platform string
+	Limit    int
+}
+
+type ConversationListResult struct {
+	IGUserID      string                  `json:"ig_user_id"`
+	Conversations []map[string]any        `json:"conversations"`
+	Pagination    *graph.PaginationResult `json:"pagination,omitempty"`
+}
+
+type ConversationReplyOptions struct {
+	IGUserID    string
+	RecipientID string
+	Message     string
+}
+
+type ConversationReplyResult struct {
+	IGUserID    string         `json:"ig_user_id"`
+	RecipientID string         `json:"recipient_id"`
+	Response    map[string]any `json:"response"`
+}
+
+func (s *Service) ListConversations(ctx context.Context, version string, token string, appSecret string, options ConversationListOptions) (*ConversationListResult, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("instagram service client is required")
+	}
+
+	req, igUserID, err := BuildConversationListRequest(version, token, appSecret, options)
+	if err != nil {
+		return nil, err
+	}
+
+	var conversations []map[string]any
+	paginationResult, err := s.Client.FetchWithPagination(ctx, req, graph.PaginationOptions{
+		FollowNext: true,
+		Limit:      options.Limit,
+	}, func(item map[string]any) error {
+		conversations = append(conversations, item)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &ConversationListResult{
+		IGUserID:      igUserID,
+		Conversations: conversations,
+		Pagination:    paginationResult,
+	}, nil
+}
+
+func (s *Service) ReplyToConversation(ctx context.Context, version string, token string, appSecret string, options ConversationReplyOptions) (*ConversationReplyResult, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("instagram service client is required")
+	}
+
+	req, err := BuildConversationReplyRequest(version, token, appSecret, options)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := s.Client.Do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ConversationReplyResult{
+		IGUserID:    strings.TrimSpace(options.IGUserID),
+		RecipientID: strings.TrimSpace(options.RecipientID),
+		Response:    response.Body,
+	}, nil
+}
+
+func BuildConversationListRequest(version string, token string, appSecret string, options ConversationListOptions) (graph.Request, string, error) {
+	igUserID, err := normalizeGraphID("ig user id", options.IGUserID)
+	if err != nil {
+		return graph.Request{}, "", err
+	}
+
+	platform := strings.TrimSpace(options.Platform)
+	if platform == "" {
+		platform = "instagram"
+	}
+
+	return graph.Request{
+		Method:  "GET",
+		Path:    fmt.Sprintf("%s/conversations", igUserID),
+		Version: strings.TrimSpace(version),
+		Query: map[string]string{
+			"platform": platform,
+			"fields":   "id,updated_time,participants,messages{message,from,created_time}",
+		},
+		AccessToken: token,
+		AppSecret:   appSecret,
+	}, igUserID, nil
+}
+
+func BuildConversationReplyRequest(version string, token string, appSecret string, options ConversationReplyOptions) (graph.Request, error) {
+	igUserID, err := normalizeGraphID("ig user id", options.IGUserID)
+	if err != nil {
+		return graph.Request{}, err
+	}
+
+	recipientID := strings.TrimSpace(options.RecipientID)
+	if recipientID == "" {
+		return graph.Request{}, errors.New("recipient id is required")
+	}
+
+	message := strings.TrimSpace(options.Message)
+	if message == "" {
+		return graph.Request{}, errors.New("message is required")
+	}
+
+	recipientPayload, err := marshalJSONFormValue(map[string]string{"id": recipientID})
+	if err != nil {
+		return graph.Request{}, fmt.Errorf("encode recipient payload: %w", err)
+	}
+	messagePayload, err := marshalJSONFormValue(map[string]string{"text": message})
+	if err != nil {
+		return graph.Request{}, fmt.Errorf("encode message payload: %w", err)
+	}
+
+	return graph.Request{
+		Method:  "POST",
+		Path:    fmt.Sprintf("%s/messages", igUserID),
+		Version: strings.TrimSpace(version),
+		Form: map[string]string{
+			"recipient": recipientPayload,
+			"message":   messagePayload,
+		},
+		AccessToken: token,
+		AppSecret:   appSecret,
+	}, nil
+}
+
+func marshalJSONFormValue(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func normalizeMediaType(mediaType string) (string, error) {

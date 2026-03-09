@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -577,5 +578,290 @@ func TestIGPublishFeedScheduleIdempotencyConflictWritesStructuredError(t *testin
 	}
 	if got := errorBody["retryable"]; got != false {
 		t.Fatalf("expected retryable=false, got %v", got)
+	}
+}
+
+func TestIGPublishScheduleRunDryRun(t *testing.T) {
+	wasCalled := false
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			wasCalled = true
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	statePath := t.TempDir() + "/ig-schedules.json"
+	publishAt := time.Now().UTC().Add(-1 * time.Minute).Format(time.RFC3339)
+
+	createCmd := NewIGCommand(testRuntime("prod"))
+	createCmd.SilenceErrors = true
+	createCmd.SilenceUsage = true
+	createCmd.SetOut(&bytes.Buffer{})
+	createCmd.SetErr(&bytes.Buffer{})
+	createCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--publish-at", time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+		"--schedule-state-path", statePath,
+	})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+
+	_ = publishAt
+
+	runOut := &bytes.Buffer{}
+	runCmd := NewIGCommand(testRuntime("prod"))
+	runCmd.SilenceErrors = true
+	runCmd.SilenceUsage = true
+	runCmd.SetOut(runOut)
+	runCmd.SetErr(&bytes.Buffer{})
+	runCmd.SetArgs([]string{
+		"publish", "schedule", "run",
+		"--dry-run",
+		"--schedule-state-path", statePath,
+	})
+	if err := runCmd.Execute(); err != nil {
+		t.Fatalf("run schedule: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, runOut.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta ig publish schedule run")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["dry_run"]; got != true {
+		t.Fatalf("expected dry_run=true, got %v", got)
+	}
+	if wasCalled {
+		t.Fatal("graph client should not be called during dry-run")
+	}
+}
+
+func TestIGPublishScheduleRunExecutesDueRecords(t *testing.T) {
+	stub := &igPublishSequenceHTTPClient{
+		t: t,
+		responses: []igPublishSequenceResponse{
+			{statusCode: 200, response: `{"id":"creation_99"}`},
+			{statusCode: 200, response: `{"id":"creation_99","status":"FINISHED","status_code":"FINISHED"}`},
+			{statusCode: 200, response: `{"id":"media_77"}`},
+		},
+	}
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			client := graph.NewClient(stub, "https://graph.example.com")
+			client.MaxRetries = 0
+			return client
+		},
+	)
+
+	statePath := t.TempDir() + "/ig-schedules.json"
+
+	createCmd := NewIGCommand(testRuntime("prod"))
+	createCmd.SilenceErrors = true
+	createCmd.SilenceUsage = true
+	createCmd.SetOut(&bytes.Buffer{})
+	createCmd.SetErr(&bytes.Buffer{})
+	createCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--publish-at", time.Now().UTC().Add(1 * time.Second).Format(time.RFC3339),
+		"--schedule-state-path", statePath,
+	})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	runOut := &bytes.Buffer{}
+	runCmd := NewIGCommand(testRuntime("prod"))
+	runCmd.SilenceErrors = true
+	runCmd.SilenceUsage = true
+	runCmd.SetOut(runOut)
+	runCmd.SetErr(&bytes.Buffer{})
+	runCmd.SetArgs([]string{
+		"publish", "schedule", "run",
+		"--schedule-state-path", statePath,
+	})
+	if err := runCmd.Execute(); err != nil {
+		t.Fatalf("run schedule: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, runOut.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta ig publish schedule run")
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["completed"]; got != float64(1) {
+		t.Fatalf("expected completed=1, got %v", got)
+	}
+	if got := data["failed"]; got != float64(0) {
+		t.Fatalf("expected failed=0, got %v", got)
+	}
+
+	records, ok := data["records"].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("expected 1 record, got %v", data["records"])
+	}
+	rec, ok := records[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected record object, got %T", records[0])
+	}
+	if got := rec["status"]; got != "completed" {
+		t.Fatalf("expected completed status, got %v", got)
+	}
+	if got := rec["media_id"]; got != "media_77" {
+		t.Fatalf("expected media_id=media_77, got %v", got)
+	}
+
+	if len(stub.responses) != 0 {
+		t.Fatalf("expected all stub responses consumed, %d remaining", len(stub.responses))
+	}
+}
+
+func TestIGPublishScheduleRunCredentialFailure(t *testing.T) {
+	credCallCount := 0
+	useIGDependencies(t,
+		func(profile string) (*ProfileCredentials, error) {
+			credCallCount++
+			if credCallCount > 1 {
+				return nil, errors.New("auth preflight failed: token expired")
+			}
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			return graph.NewClient(nil, "")
+		},
+	)
+
+	statePath := t.TempDir() + "/ig-schedules.json"
+
+	createCmd := NewIGCommand(testRuntime("prod"))
+	createCmd.SilenceErrors = true
+	createCmd.SilenceUsage = true
+	createCmd.SetOut(&bytes.Buffer{})
+	createCmd.SetErr(&bytes.Buffer{})
+	createCmd.SetArgs([]string{
+		"publish", "feed",
+		"--ig-user-id", "17841400008460056",
+		"--media-url", "https://cdn.example.com/feed.jpg",
+		"--caption", "hello #meta",
+		"--media-type", "IMAGE",
+		"--publish-at", time.Now().UTC().Add(1 * time.Second).Format(time.RFC3339),
+		"--schedule-state-path", statePath,
+	})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	runOut := &bytes.Buffer{}
+	runCmd := NewIGCommand(testRuntime("prod"))
+	runCmd.SilenceErrors = true
+	runCmd.SilenceUsage = true
+	runCmd.SetOut(runOut)
+	runCmd.SetErr(&bytes.Buffer{})
+	runCmd.SetArgs([]string{
+		"publish", "schedule", "run",
+		"--schedule-state-path", statePath,
+	})
+
+	if err := runCmd.Execute(); err != nil {
+		t.Fatalf("run schedule should succeed even with individual failures: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, runOut.Bytes())
+	data, ok := envelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object payload, got %T", envelope["data"])
+	}
+	if got := data["failed"]; got != float64(1) {
+		t.Fatalf("expected failed=1, got %v", got)
+	}
+	if got := data["completed"]; got != float64(0) {
+		t.Fatalf("expected completed=0, got %v", got)
+	}
+}
+
+func TestIGPublishScheduleRunRejectsNegativeLimit(t *testing.T) {
+	useIGDependencies(t,
+		func(string) (*ProfileCredentials, error) {
+			return &ProfileCredentials{
+				Name:      "prod",
+				Profile:   config.Profile{GraphVersion: "v25.0"},
+				Token:     "test-token",
+				AppSecret: "test-secret",
+			}, nil
+		},
+		func() *graph.Client {
+			t.Fatal("graph client should not be created when limit is invalid")
+			return nil
+		},
+	)
+
+	errOut := &bytes.Buffer{}
+	runCmd := NewIGCommand(testRuntime("prod"))
+	runCmd.SilenceErrors = true
+	runCmd.SilenceUsage = true
+	runCmd.SetOut(&bytes.Buffer{})
+	runCmd.SetErr(errOut)
+	runCmd.SetArgs([]string{
+		"publish", "schedule", "run",
+		"--limit", "-1",
+		"--schedule-state-path", t.TempDir() + "/ig-schedules.json",
+	})
+
+	err := runCmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid limit error")
+	}
+	if !strings.Contains(err.Error(), "limit must be >= 0") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	envelope := decodeEnvelope(t, errOut.Bytes())
+	if got := envelope["command"]; got != "meta ig publish schedule run" {
+		t.Fatalf("unexpected command %v", got)
+	}
+	if got := envelope["success"]; got != false {
+		t.Fatalf("expected success=false, got %v", got)
+	}
+	errorBody, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %T", envelope["error"])
+	}
+	if got := errorBody["message"]; got != "limit must be >= 0" {
+		t.Fatalf("unexpected error message %v", got)
 	}
 }

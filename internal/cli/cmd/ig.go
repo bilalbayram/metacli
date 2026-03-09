@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -453,6 +454,7 @@ func newIGPublishScheduleCommand(runtime Runtime, pluginRuntime plugin.Runtime) 
 	scheduleCmd.AddCommand(newIGPublishScheduleListCommand(runtime, pluginRuntime))
 	scheduleCmd.AddCommand(newIGPublishScheduleCancelCommand(runtime, pluginRuntime))
 	scheduleCmd.AddCommand(newIGPublishScheduleRetryCommand(runtime, pluginRuntime))
+	scheduleCmd.AddCommand(newIGPublishScheduleRunCommand(runtime, pluginRuntime))
 	return scheduleCmd
 }
 
@@ -491,7 +493,7 @@ func newIGPublishScheduleListCommand(runtime Runtime, pluginRuntime plugin.Runti
 		},
 	}
 
-	cmd.Flags().StringVar(&status, "status", "", "Filter by status: scheduled|canceled|failed")
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status: scheduled|canceled|failed|completed")
 	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
 	return cmd
 }
@@ -576,6 +578,91 @@ func newIGPublishScheduleRetryCommand(runtime Runtime, pluginRuntime plugin.Runt
 	cmd.Flags().StringVar(&scheduleID, "schedule-id", "", "Schedule identifier")
 	cmd.Flags().StringVar(&publishAt, "publish-at", "", "Retry publish time (RFC3339); defaults to existing schedule time")
 	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
+	return cmd
+}
+
+func newIGPublishScheduleRunCommand(runtime Runtime, pluginRuntime plugin.Runtime) *cobra.Command {
+	var (
+		scheduleStatePath string
+		dryRun            bool
+		limit             int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Execute due scheduled Instagram publishes",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := pluginRuntime.Trace(plugin.TraceEvent{
+				PluginID:  igPluginID,
+				Namespace: igNamespace,
+				Command:   "publish-schedule-run",
+			}); err != nil {
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule run", err)
+			}
+
+			resolvedSchedulePath, err := resolveIGScheduleStatePath(scheduleStatePath)
+			if err != nil {
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule run", err)
+			}
+
+			scheduleService := ig.NewScheduleService(resolvedSchedulePath)
+
+			publishFn := func(ctx context.Context, record ig.ScheduledPublishRecord) (string, error) {
+				creds, err := igLoadProfileCredentials(record.Profile)
+				if err != nil {
+					return "", ig.NormalizePublishPreflightError(err)
+				}
+
+				resolvedVersion := strings.TrimSpace(record.Version)
+				if resolvedVersion == "" {
+					resolvedVersion = creds.Profile.GraphVersion
+				}
+				if resolvedVersion == "" {
+					resolvedVersion = config.DefaultGraphVersion
+				}
+
+				options := ig.FeedPublishOptions{
+					IGUserID:       record.IGUserID,
+					MediaURL:       record.MediaURL,
+					Caption:        record.Caption,
+					MediaType:      record.MediaType,
+					StrictMode:     record.StrictMode,
+					IdempotencyKey: record.IdempotencyKey,
+				}
+
+				service := ig.New(igNewGraphClient())
+				var result *ig.FeedPublishResult
+				switch record.Surface {
+				case ig.PublishSurfaceFeed:
+					result, err = service.PublishFeedImmediate(ctx, resolvedVersion, creds.Token, creds.AppSecret, options)
+				case ig.PublishSurfaceReel:
+					result, err = service.PublishReelImmediate(ctx, resolvedVersion, creds.Token, creds.AppSecret, options)
+				case ig.PublishSurfaceStory:
+					result, err = service.PublishStoryImmediate(ctx, resolvedVersion, creds.Token, creds.AppSecret, options)
+				default:
+					err = errors.New("unsupported schedule surface")
+				}
+				if err != nil {
+					return "", err
+				}
+				return result.MediaID, nil
+			}
+
+			result, err := scheduleService.ExecuteDue(cmd.Context(), ig.ScheduleExecuteOptions{
+				Limit:  limit,
+				DryRun: dryRun,
+			}, publishFn)
+			if err != nil {
+				return writeIGPublishScheduleCommandError(cmd, runtime, "meta ig publish schedule run", err)
+			}
+			return writeSuccess(cmd, runtime, "meta ig publish schedule run", result, nil, nil)
+		},
+	}
+
+	cmd.Flags().StringVar(&scheduleStatePath, "schedule-state-path", "", "Schedule state file path (defaults to ~/.meta/ig/schedules.json)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview due publishes without executing")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of records to process (0 = unlimited)")
 	return cmd
 }
 

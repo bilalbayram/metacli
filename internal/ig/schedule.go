@@ -2,6 +2,7 @@ package ig
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ const (
 	ScheduleStatusScheduled    = "scheduled"
 	ScheduleStatusCanceled     = "canceled"
 	ScheduleStatusFailed       = "failed"
+	ScheduleStatusCompleted    = "completed"
 )
 
 const missedScheduleError = "scheduled publish time elapsed without execution"
@@ -40,6 +42,7 @@ type ScheduledPublishRecord struct {
 	Status         string `json:"status"`
 	RetryCount     int    `json:"retry_count"`
 	LastError      string `json:"last_error,omitempty"`
+	MediaID        string `json:"media_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -336,6 +339,155 @@ func (s *ScheduleService) Retry(options ScheduleRetryOptions) (*ScheduleTransiti
 	}, nil
 }
 
+// ScheduleExecutePublishFunc is called by ExecuteDue for each due record.
+// It returns the published media ID on success or an error on failure.
+type ScheduleExecutePublishFunc func(ctx context.Context, record ScheduledPublishRecord) (mediaID string, err error)
+
+// ScheduleExecuteOptions controls the behavior of ExecuteDue.
+type ScheduleExecuteOptions struct {
+	Limit  int
+	DryRun bool
+}
+
+// ScheduleExecuteRecordResult is the per-record outcome from ExecuteDue.
+type ScheduleExecuteRecordResult struct {
+	ScheduleID string `json:"schedule_id"`
+	Profile    string `json:"profile"`
+	Surface    string `json:"surface"`
+	Status     string `json:"status"`
+	MediaID    string `json:"media_id,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ScheduleExecuteResult is the aggregate result from ExecuteDue.
+type ScheduleExecuteResult struct {
+	Total     int                           `json:"total"`
+	Completed int                           `json:"completed"`
+	Failed    int                           `json:"failed"`
+	Skipped   int                           `json:"skipped"`
+	DryRun    bool                          `json:"dry_run"`
+	Records   []ScheduleExecuteRecordResult `json:"records"`
+}
+
+// ExecuteDue finds all scheduled records whose publish_at has elapsed and
+// executes them via the provided publishFn callback. State is saved after
+// each record for crash safety. Records are processed sequentially.
+func (s *ScheduleService) ExecuteDue(ctx context.Context, options ScheduleExecuteOptions, publishFn ScheduleExecutePublishFunc) (*ScheduleExecuteResult, error) {
+	if s == nil {
+		return nil, errors.New("schedule service is required")
+	}
+	if strings.TrimSpace(s.Path) == "" {
+		return nil, errors.New("schedule state path is required")
+	}
+	if options.Limit < 0 {
+		return nil, errors.New("limit must be >= 0")
+	}
+	if publishFn == nil && !options.DryRun {
+		return nil, errors.New("publish function is required")
+	}
+
+	state, err := loadScheduleState(s.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.nowUTC()
+
+	type dueSchedule struct {
+		idx       int
+		publishAt time.Time
+		createdAt time.Time
+	}
+
+	dueSchedules := make([]dueSchedule, 0, len(state.Schedules))
+	for idx, record := range state.Schedules {
+		if record.Status != ScheduleStatusScheduled {
+			continue
+		}
+		publishAt, err := parsePublishAt(record.PublishAt)
+		if err != nil {
+			continue
+		}
+		if publishAt.After(now) {
+			continue
+		}
+		createdAt, err := time.Parse(time.RFC3339, record.CreatedAt)
+		if err != nil {
+			createdAt = time.Time{}
+		}
+		dueSchedules = append(dueSchedules, dueSchedule{
+			idx:       idx,
+			publishAt: publishAt,
+			createdAt: createdAt.UTC(),
+		})
+	}
+
+	sort.SliceStable(dueSchedules, func(i, j int) bool {
+		if !dueSchedules[i].publishAt.Equal(dueSchedules[j].publishAt) {
+			return dueSchedules[i].publishAt.Before(dueSchedules[j].publishAt)
+		}
+		if !dueSchedules[i].createdAt.Equal(dueSchedules[j].createdAt) {
+			return dueSchedules[i].createdAt.Before(dueSchedules[j].createdAt)
+		}
+		return state.Schedules[dueSchedules[i].idx].ScheduleID < state.Schedules[dueSchedules[j].idx].ScheduleID
+	})
+
+	if options.Limit > 0 && len(dueSchedules) > options.Limit {
+		dueSchedules = dueSchedules[:options.Limit]
+	}
+
+	result := &ScheduleExecuteResult{
+		Total:   len(dueSchedules),
+		DryRun:  options.DryRun,
+		Records: make([]ScheduleExecuteRecordResult, 0, len(dueSchedules)),
+	}
+
+	for _, due := range dueSchedules {
+		idx := due.idx
+		record := state.Schedules[idx]
+		recordResult := ScheduleExecuteRecordResult{
+			ScheduleID: record.ScheduleID,
+			Profile:    record.Profile,
+			Surface:    record.Surface,
+		}
+
+		if options.DryRun {
+			recordResult.Status = record.Status
+			result.Skipped++
+			result.Records = append(result.Records, recordResult)
+			continue
+		}
+
+		mediaID, publishErr := publishFn(ctx, record)
+		if publishErr != nil {
+			record.Status = ScheduleStatusFailed
+			record.LastError = publishErr.Error()
+			record.MediaID = ""
+			recordResult.Status = ScheduleStatusFailed
+			recordResult.Error = publishErr.Error()
+			result.Failed++
+		} else {
+			record.Status = ScheduleStatusCompleted
+			record.MediaID = strings.TrimSpace(mediaID)
+			record.LastError = ""
+			recordResult.Status = ScheduleStatusCompleted
+			recordResult.MediaID = record.MediaID
+			result.Completed++
+		}
+
+		record.UpdatedAt = now.Format(time.RFC3339)
+		state.Schedules[idx] = record
+
+		if err := saveScheduleState(s.Path, state); err != nil {
+			return nil, fmt.Errorf("save schedule state after %s: %w", record.ScheduleID, err)
+		}
+
+		result.Records = append(result.Records, recordResult)
+	}
+
+	return result, nil
+}
+
 func nextScheduleID(sequence int, surface string, igUserID string, mediaURL string, publishAt time.Time) string {
 	seed := fmt.Sprintf("%d|%s|%s|%s|%s", sequence, surface, igUserID, mediaURL, publishAt.UTC().Format(time.RFC3339))
 	sum := sha256.Sum256([]byte(seed))
@@ -422,12 +574,12 @@ func parsePublishAt(raw string) (time.Time, error) {
 func normalizeScheduleStatus(status string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	switch normalized {
-	case ScheduleStatusScheduled, ScheduleStatusCanceled, ScheduleStatusFailed:
+	case ScheduleStatusScheduled, ScheduleStatusCanceled, ScheduleStatusFailed, ScheduleStatusCompleted:
 		return normalized, nil
 	case "":
 		return "", errors.New("schedule status is required")
 	default:
-		return "", fmt.Errorf("unsupported schedule status %q: expected scheduled|canceled|failed", status)
+		return "", fmt.Errorf("unsupported schedule status %q: expected scheduled|canceled|failed|completed", status)
 	}
 }
 

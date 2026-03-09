@@ -147,6 +147,27 @@ Notes:
   --media-url https://cdn.example.com/image.jpg \
   --caption "Launch post #meta" \
   --idempotency-key publish-feed-001
+
+# Schedule a story for next Tuesday at 4 PM UTC
+./meta --profile prod ig publish story \
+  --media-url https://cdn.example.com/story.mp4 \
+  --caption "Coming soon" \
+  --media-type STORIES \
+  --publish-at 2026-03-17T16:00:00Z
+
+# Execute all due scheduled publishes (designed for cron)
+./meta --profile prod ig publish schedule run
+
+# Preview what would be published without executing
+./meta --profile prod ig publish schedule run --dry-run
+
+# List scheduled jobs
+./meta --profile prod ig publish schedule list --status scheduled
+```
+
+**Cron setup** (run every 30 minutes):
+```
+*/30 * * * * /usr/local/bin/meta --profile prod ig publish schedule run
 ```
 
 ## Marketing Workflows
@@ -331,7 +352,7 @@ Auth metadata fields required on every profile in schema v2:
 
 | Command Family | Purpose | Key Commands |
 |---|---|---|
-| `ig` | Instagram publishing lifecycle | `health`, `media upload`, `media status`, `caption validate`, `publish feed`, `publish reel`, `publish story`, `publish schedule list/cancel/retry` |
+| `ig` | Instagram publishing lifecycle | `health`, `media upload`, `media status`, `caption validate`, `publish feed`, `publish reel`, `publish story`, `publish schedule list/cancel/retry/run` |
 | `wa` | WhatsApp namespace scaffold | `health`, `capability` |
 | `msgr` | Messenger namespace scaffold | `health`, `capability` |
 | `threads` | Threads namespace scaffold | `health`, `capability` |

@@ -47,17 +47,17 @@ type stubAuthService struct {
 	rotateProfileInput string
 	rotateProfileErr   error
 
-	debugTokenInputToken      string
-	debugTokenInputAccess     string
-	debugTokenInputVersion    string
-	debugTokenResp            *auth.DebugTokenResponse
-	debugTokenErr             error
-	listProfilesResp          map[string]config.Profile
-	listProfilesErr           error
-	discoveredPages           []auth.DiscoveredPage
-	discoveredPagesErr        error
-	updateProfileBindingsIn   *auth.UpdateProfileBindingsInput
-	updateProfileBindingsErr  error
+	debugTokenInputToken     string
+	debugTokenInputAccess    string
+	debugTokenInputVersion   string
+	debugTokenResp           *auth.DebugTokenResponse
+	debugTokenErr            error
+	listProfilesResp         map[string]config.Profile
+	listProfilesErr          error
+	discoveredPages          []auth.DiscoveredPage
+	discoveredPagesErr       error
+	updateProfileBindingsIn  *auth.UpdateProfileBindingsInput
+	updateProfileBindingsErr error
 }
 
 func (s *stubAuthService) AddSystemUser(_ context.Context, input auth.AddSystemUserInput) error {
@@ -301,6 +301,66 @@ func TestAuthLoginRunsAutoCallbackAndPersistsProfile(t *testing.T) {
 	}
 }
 
+func TestAuthLoginPersistsFallbackExpiryWhenTokenMetadataOmitsExpiry(t *testing.T) {
+	service := &stubAuthService{
+		exchangeLongLived: auth.LongLivedToken{
+			AccessToken:      "long-token",
+			ExpiresInSeconds: 0,
+		},
+		debugTokenResp: &auth.DebugTokenResponse{
+			Data: map[string]any{
+				"is_valid": true,
+				"scopes":   []any{"ads_read", "pages_show_list"},
+			},
+		},
+	}
+	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
+	useOAuthAutomationStubs(t)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	cmd := NewAuthCommand(testRuntime("prod"))
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs([]string{"login", "--app-id", "app_1", "--app-secret", "secret_1", "--scopes", "ads_read,pages_show_list"})
+
+	before := time.Now().UTC()
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute login: %v", err)
+	}
+	if service.addUserInput == nil {
+		t.Fatal("expected AddUser call")
+	}
+
+	issuedAt, err := time.Parse(time.RFC3339, service.addUserInput.IssuedAt)
+	if err != nil {
+		t.Fatalf("parse issued_at: %v", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, service.addUserInput.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expires_at: %v", err)
+	}
+	if !expiresAt.After(issuedAt) {
+		t.Fatalf("expected expires_at after issued_at: issued_at=%s expires_at=%s", issuedAt, expiresAt)
+	}
+
+	fallbackTTL := expiresAt.Sub(issuedAt)
+	if fallbackTTL < 59*24*time.Hour || fallbackTTL > 61*24*time.Hour {
+		t.Fatalf("expected fallback expiry near 60 days, got %s", fallbackTTL)
+	}
+	if !expiresAt.After(before.Add(59 * 24 * time.Hour)) {
+		t.Fatalf("expected expires_at to be in the future, got %s", expiresAt)
+	}
+
+	envelope := decodeEnvelope(t, stdout.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta auth login")
+	if !strings.Contains(stderr.String(), "https://example.com/oauth") {
+		t.Fatalf("expected auth url in stderr, got %q", stderr.String())
+	}
+}
+
 func TestAuthLoginUsesRedirectURIOverrideForOAuthExchange(t *testing.T) {
 	service := &stubAuthService{}
 	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })
@@ -442,7 +502,7 @@ func TestAuthSetupAcceptsExplicitScopesOverride(t *testing.T) {
 
 func TestAuthValidateUsesEnsureValidWithDefaults(t *testing.T) {
 	service := &stubAuthService{
-		ensureValidResult: &auth.DebugTokenMetadata{IsValid: true, Scopes: []string{"ads_read"}, ExpiresAt: time.Now().Add(96 * time.Hour)},
+		ensureValidResult:   &auth.DebugTokenMetadata{IsValid: true, Scopes: []string{"ads_read"}, ExpiresAt: time.Now().Add(96 * time.Hour)},
 		validateProfileResp: &auth.DebugTokenResponse{Data: map[string]any{"is_valid": true}},
 	}
 	useAuthServiceFactory(t, func() (authCLIService, error) { return service, nil })

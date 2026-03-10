@@ -77,9 +77,13 @@ func (s *Service) ExchangeLongLivedUserToken(ctx context.Context, input Exchange
 		return LongLivedToken{}, errors.New("long-lived token response did not include access_token")
 	}
 
-	expiresIn, err := parseJSONInt64Field(response, "expires_in")
-	if err != nil {
-		return LongLivedToken{}, err
+	var expiresIn int64
+	if _, ok := response["expires_in"]; ok {
+		parsed, parseErr := parseJSONInt64Field(response, "expires_in")
+		if parseErr != nil {
+			return LongLivedToken{}, parseErr
+		}
+		expiresIn = parsed
 	}
 
 	return LongLivedToken{

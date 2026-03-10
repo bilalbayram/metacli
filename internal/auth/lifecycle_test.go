@@ -108,3 +108,30 @@ func TestExchangeLongLivedUserToken(t *testing.T) {
 		t.Fatalf("unexpected expires_in: %d", result.ExpiresInSeconds)
 	}
 }
+
+func TestExchangeLongLivedUserTokenWithoutExpiresIn(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"long-token"}`))
+	}))
+	defer server.Close()
+
+	svc := NewService("", nil, server.Client(), server.URL)
+	result, err := svc.ExchangeLongLivedUserToken(context.Background(), ExchangeLongLivedUserTokenInput{
+		AppID:           "app-123",
+		AppSecret:       "secret-123",
+		ShortLivedToken: "short-token",
+		Version:         "v25.0",
+	})
+	if err != nil {
+		t.Fatalf("exchange long lived token without expires_in: %v", err)
+	}
+	if result.AccessToken != "long-token" {
+		t.Fatalf("unexpected token: %s", result.AccessToken)
+	}
+	if result.ExpiresInSeconds != 0 {
+		t.Fatalf("expected expires_in=0, got %d", result.ExpiresInSeconds)
+	}
+}

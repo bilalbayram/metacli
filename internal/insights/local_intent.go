@@ -17,7 +17,7 @@ type localIntentAlias struct {
 
 var localIntentAliases = []localIntentAlias{
 	{actionType: "onsite_conversion.business_address_tap", field: "address_taps"},
-	{actionType: "onsite_conversion.call", field: "calls"},
+	{actionType: "click_to_call_native_call_placed", field: "calls"},
 	{actionType: "onsite_conversion.get_directions", field: "directions"},
 	{actionType: "onsite_conversion.profile_visit", field: "profile_visits"},
 }
@@ -39,6 +39,27 @@ func NormalizeLocalIntentRows(rows []map[string]any) []map[string]any {
 		normalized = append(normalized, cloned)
 	}
 	return normalized
+}
+
+func SummarizeLocalIntentRows(rows []map[string]any) map[string]any {
+	summary := make(map[string]any)
+	for _, alias := range localIntentAliases {
+		var total float64
+		var hasValue bool
+		for _, row := range rows {
+			value, ok := numericValue(row[alias.field])
+			if !ok {
+				continue
+			}
+			total += value
+			hasValue = true
+		}
+		if !hasValue {
+			continue
+		}
+		summary[alias.field] = compactNumericValue(total)
+	}
+	return summary
 }
 
 func DiscoverActionTypes(rows []map[string]any) []map[string]any {
@@ -164,6 +185,34 @@ func normalizedActionValue(raw any) (any, bool) {
 	default:
 		return typed, true
 	}
+}
+
+func numericValue(raw any) (float64, bool) {
+	switch typed := raw.(type) {
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func compactNumericValue(value float64) any {
+	if value == float64(int64(value)) {
+		return int64(value)
+	}
+	return value
 }
 
 func normalizedFieldForActionType(actionType string) string {

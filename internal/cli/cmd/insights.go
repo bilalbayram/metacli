@@ -80,17 +80,18 @@ func NewInsightsCommand(runtime Runtime) *cobra.Command {
 
 func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile     string
-		accountID   string
-		level       string
-		datePreset  string
-		breakdowns  string
-		attribution string
-		limit       int
-		async       bool
-		format      string
-		metricPack  string
-		version     string
+		profile           string
+		accountID         string
+		level             string
+		datePreset        string
+		breakdowns        string
+		attribution       string
+		publisherPlatform string
+		limit             int
+		async             bool
+		format            string
+		metricPack        string
+		version           string
 	)
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -134,14 +135,15 @@ func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 			client := insightsNewGraphClient()
 			service := insightsNewService(client)
 			result, err := service.Run(cmd.Context(), version, creds.Token, creds.AppSecret, insights.RunOptions{
-				AccountID:   accountID,
-				Level:       level,
-				DatePreset:  datePreset,
-				Breakdowns:  csvToSlice(breakdowns),
-				Attribution: csvToSlice(attribution),
-				Fields:      fields,
-				Limit:       limit,
-				Async:       async,
+				AccountID:         accountID,
+				Level:             level,
+				DatePreset:        datePreset,
+				Breakdowns:        csvToSlice(breakdowns),
+				Attribution:       csvToSlice(attribution),
+				Fields:            fields,
+				Limit:             limit,
+				Async:             async,
+				PublisherPlatform: strings.ToLower(strings.TrimSpace(publisherPlatform)),
 			})
 			if err != nil {
 				return err
@@ -159,6 +161,7 @@ func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&datePreset, "date-preset", "last_7d", "Date preset (for example last_7d)")
 	cmd.Flags().StringVar(&breakdowns, "breakdowns", "", "Comma-separated breakdowns")
 	cmd.Flags().StringVar(&attribution, "attribution", "", "Comma-separated action attribution windows")
+	cmd.Flags().StringVar(&publisherPlatform, "publisher-platform", "", "Filter insight rows to a publisher platform (for example instagram)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Limit total rows returned")
 	cmd.Flags().BoolVar(&async, "async", false, "Run insights asynchronously")
 	cmd.Flags().StringVar(&metricPack, "metric-pack", "basic", "Metric pack: basic|quality|local_intent")
@@ -169,15 +172,16 @@ func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 
 func newInsightsActionTypesCommand(runtime Runtime) *cobra.Command {
 	var (
-		profile     string
-		accountID   string
-		level       string
-		datePreset  string
-		attribution string
-		limit       int
-		async       bool
-		format      string
-		version     string
+		profile           string
+		accountID         string
+		level             string
+		datePreset        string
+		attribution       string
+		publisherPlatform string
+		limit             int
+		async             bool
+		format            string
+		version           string
 	)
 
 	cmd := &cobra.Command{
@@ -218,13 +222,14 @@ func newInsightsActionTypesCommand(runtime Runtime) *cobra.Command {
 			client := insightsNewGraphClient()
 			service := insightsNewService(client)
 			result, err := service.Run(cmd.Context(), version, creds.Token, creds.AppSecret, insights.RunOptions{
-				AccountID:   accountID,
-				Level:       level,
-				DatePreset:  datePreset,
-				Attribution: csvToSlice(attribution),
-				Fields:      insightsActionDiscoveryFields,
-				Limit:       limit,
-				Async:       async,
+				AccountID:         accountID,
+				Level:             level,
+				DatePreset:        datePreset,
+				Attribution:       csvToSlice(attribution),
+				Fields:            insightsActionDiscoveryFields,
+				Limit:             limit,
+				Async:             async,
+				PublisherPlatform: strings.ToLower(strings.TrimSpace(publisherPlatform)),
 			})
 			if err != nil {
 				return err
@@ -239,6 +244,7 @@ func newInsightsActionTypesCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&level, "level", "ad", "Insights level: account|campaign|adset|ad")
 	cmd.Flags().StringVar(&datePreset, "date-preset", "last_30d", "Date preset (for example last_30d)")
 	cmd.Flags().StringVar(&attribution, "attribution", "", "Comma-separated action attribution windows")
+	cmd.Flags().StringVar(&publisherPlatform, "publisher-platform", "", "Filter insight rows to a publisher platform (for example instagram)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Limit total rows returned before aggregation")
 	cmd.Flags().BoolVar(&async, "async", false, "Run insights asynchronously")
 	cmd.Flags().StringVar(&format, "format", "json", "Export format: json|jsonl|csv")

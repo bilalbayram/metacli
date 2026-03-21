@@ -12,14 +12,17 @@ import (
 )
 
 type RunOptions struct {
-	AccountID   string
-	Level       string
-	DatePreset  string
-	Breakdowns  []string
-	Attribution []string
-	Fields      []string
-	Limit       int
-	Async       bool
+	AccountID         string
+	Level             string
+	DatePreset        string
+	Since             string
+	Until             string
+	Breakdowns        []string
+	Attribution       []string
+	Fields            []string
+	Limit             int
+	Async             bool
+	PublisherPlatform string
 }
 
 type Result struct {
@@ -54,15 +57,29 @@ func (s *Service) Run(ctx context.Context, version string, token string, appSecr
 	if strings.TrimSpace(options.Level) == "" {
 		return nil, errors.New("insights level is required")
 	}
-	if strings.TrimSpace(options.DatePreset) == "" {
-		return nil, errors.New("date preset is required")
-	}
 	params := map[string]string{
-		"level":       options.Level,
-		"date_preset": options.DatePreset,
+		"level": options.Level,
 	}
-	if len(options.Breakdowns) > 0 {
-		params["breakdowns"] = strings.Join(options.Breakdowns, ",")
+	switch {
+	case strings.TrimSpace(options.Since) != "" || strings.TrimSpace(options.Until) != "":
+		since := strings.TrimSpace(options.Since)
+		until := strings.TrimSpace(options.Until)
+		if since == "" || until == "" {
+			return nil, errors.New("both since and until are required when time_range is used")
+		}
+		params["time_range"] = fmt.Sprintf(`{"since":"%s","until":"%s"}`, since, until)
+	case strings.TrimSpace(options.DatePreset) != "":
+		params["date_preset"] = options.DatePreset
+	default:
+		return nil, errors.New("date preset is required when time_range is not set")
+	}
+
+	breakdowns := normalizeBreakdowns(options.Breakdowns)
+	if publisherPlatform := strings.ToLower(strings.TrimSpace(options.PublisherPlatform)); publisherPlatform != "" {
+		breakdowns = appendMissingBreakdown(breakdowns, "publisher_platform")
+	}
+	if len(breakdowns) > 0 {
+		params["breakdowns"] = strings.Join(breakdowns, ",")
 	}
 	if len(options.Attribution) > 0 {
 		params["action_attribution_windows"] = strings.Join(options.Attribution, ",")
@@ -79,8 +96,9 @@ func (s *Service) Run(ctx context.Context, version string, token string, appSecr
 	}
 
 	path := fmt.Sprintf("act_%s/insights", options.AccountID)
+	trimmedPublisherPlatform := strings.ToLower(strings.TrimSpace(options.PublisherPlatform))
 	if !options.Async {
-		return s.fetchInsights(ctx, version, path, token, appSecret, params, options.Limit)
+		return s.fetchInsights(ctx, version, path, token, appSecret, params, options.Limit, trimmedPublisherPlatform)
 	}
 
 	runID, err := s.startAsyncRun(ctx, version, path, token, appSecret, params)
@@ -90,7 +108,7 @@ func (s *Service) Run(ctx context.Context, version string, token string, appSecr
 	if err := s.waitForRun(ctx, version, runID, token, appSecret); err != nil {
 		return nil, err
 	}
-	result, err := s.fetchInsights(ctx, version, fmt.Sprintf("%s/insights", runID), token, appSecret, params, options.Limit)
+	result, err := s.fetchInsights(ctx, version, fmt.Sprintf("%s/insights", runID), token, appSecret, params, options.Limit, trimmedPublisherPlatform)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +168,7 @@ func (s *Service) waitForRun(ctx context.Context, version string, runID string, 
 	return fmt.Errorf("async insights run %s did not complete after %d attempts", runID, s.MaxPollAttempts)
 }
 
-func (s *Service) fetchInsights(ctx context.Context, version string, path string, token string, appSecret string, params map[string]string, limit int) (*Result, error) {
+func (s *Service) fetchInsights(ctx context.Context, version string, path string, token string, appSecret string, params map[string]string, limit int, publisherPlatform string) (*Result, error) {
 	items := make([]map[string]any, 0)
 	pagination, err := s.Client.FetchWithPagination(ctx, graph.Request{
 		Method:      "GET",
@@ -163,6 +181,12 @@ func (s *Service) fetchInsights(ctx context.Context, version string, path string
 		FollowNext: true,
 		Limit:      limit,
 	}, func(item map[string]any) error {
+		if publisherPlatform != "" {
+			value, _ := item["publisher_platform"].(string)
+			if strings.ToLower(strings.TrimSpace(value)) != publisherPlatform {
+				return nil
+			}
+		}
 		items = append(items, item)
 		return nil
 	})
@@ -173,6 +197,36 @@ func (s *Service) fetchInsights(ctx context.Context, version string, path string
 		Rows:       items,
 		Pagination: pagination,
 	}, nil
+}
+
+func normalizeBreakdowns(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func appendMissingBreakdown(values []string, breakdown string) []string {
+	normalized := strings.ToLower(strings.TrimSpace(breakdown))
+	if normalized == "" {
+		return values
+	}
+	for _, value := range values {
+		if value == normalized {
+			return values
+		}
+	}
+	return append(values, normalized)
 }
 
 func isCompleted(status string) bool {

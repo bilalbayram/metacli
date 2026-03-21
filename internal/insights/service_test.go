@@ -154,3 +154,70 @@ func TestRunRejectsBlankFieldsFilter(t *testing.T) {
 		t.Fatalf("expected zero network calls, got %d", got)
 	}
 }
+
+func TestRunFiltersPublisherPlatformAndAddsBreakdown(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("breakdowns"); got != "publisher_platform" {
+			t.Fatalf("unexpected breakdowns query: got=%q want=%q", got, "publisher_platform")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"publisher_platform": "facebook", "spend": "10"},
+				{"publisher_platform": "instagram", "spend": "20"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	svc := New(client)
+	result, err := svc.Run(context.Background(), "v25.0", "token", "", RunOptions{
+		AccountID:         "1",
+		Level:             "account",
+		DatePreset:        "last_7d",
+		PublisherPlatform: "instagram",
+	})
+	if err != nil {
+		t.Fatalf("run sync insights with publisher platform filter: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 filtered row, got %d", len(result.Rows))
+	}
+	if got := result.Rows[0]["publisher_platform"]; got != "instagram" {
+		t.Fatalf("unexpected filtered publisher_platform %#v", got)
+	}
+}
+
+func TestRunSupportsExplicitTimeRange(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("date_preset"); got != "" {
+			t.Fatalf("expected date_preset to be omitted, got %q", got)
+		}
+		if got := r.URL.Query().Get("time_range"); got != `{"since":"2026-03-14","until":"2026-03-21"}` {
+			t.Fatalf("unexpected time_range query: %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"spend": "10"}},
+		})
+	}))
+	defer server.Close()
+
+	client := graph.NewClient(server.Client(), server.URL)
+	svc := New(client)
+	result, err := svc.Run(context.Background(), "v25.0", "token", "", RunOptions{
+		AccountID: "1",
+		Level:     "account",
+		Since:     "2026-03-14",
+		Until:     "2026-03-21",
+	})
+	if err != nil {
+		t.Fatalf("run sync insights with time_range: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(result.Rows))
+	}
+}

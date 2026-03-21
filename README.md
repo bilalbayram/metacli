@@ -7,10 +7,10 @@ Meta Marketing CLI is a developer-first, fail-closed command-line interface for 
 - Keychain-only secret storage (no env/plaintext fallback)
 - Fail-closed profile preflight before operational commands
 - Direct Graph API access (`api get/post/delete/batch`)
-- Insights account discovery, raw action-type discovery, and metric packs (`insights accounts list`, `insights action-types`, `insights run --metric-pack quality|local_intent`)
+- Insights account discovery, raw action-type discovery, publisher-platform filtering, and metric packs (`insights accounts list`, `insights action-types`, `insights run --metric-pack quality|local_intent`)
 - Campaign, ad set, ad, creative (image + video), audience, and catalog workflows
 - Budget mutation guardrails for spend-changing writes
-- Instagram media upload, status, publish, and schedule lifecycle
+- Instagram media upload, status, publish, schedule lifecycle, and raw account/media insights
 - Operations intelligence checks (schema drift, rate limits, policy preflight)
 - Stable output envelope (`contract_version: 1.0`) for automation
 
@@ -133,6 +133,15 @@ Schema-aware commands look in `~/.meta/schema-packs` by default. Run `./meta sch
   --level ad \
   --format json
 
+# Keep paid insights on Instagram placements only
+./meta --profile prod insights run \
+  --account-id <AD_ACCOUNT_ID> \
+  --date-preset last_7d \
+  --level account \
+  --metric-pack local_intent \
+  --publisher-platform instagram \
+  --format json
+
 # Run local-intent insights and keep raw action arrays plus flat aliases
 ./meta --profile prod insights run \
   --account-id <AD_ACCOUNT_ID> \
@@ -147,6 +156,9 @@ Notes:
 - `--metric-pack basic` keeps the previous default behavior.
 - `--metric-pack quality` requests expanded fields (CTR, CPC, CPM, reach/frequency, actions, and related cost metrics).
 - `--metric-pack local_intent` preserves raw `actions` and `cost_per_action_type`, then adds flat alias fields like `address_taps`, `calls`, `directions`, and `profile_visits` when those raw action types are present.
+- `--publisher-platform instagram` keeps the paid Ads Insights surface but forces a `publisher_platform` breakdown and filters the returned rows down to Instagram placements.
+- `calls` is populated from the raw Graph action type `click_to_call_native_call_placed`; other call-connect and call-confirm metrics remain raw-only so machine consumers can keep those semantics separate.
+- Place-navigation aliases are intentionally sparse. `address_taps`, `directions`, and `profile_visits` only appear when Graph emits the matching raw action types for your campaigns.
 - `insights action-types` is the quickest way to discover which raw `action_type` values your account is returning before you automate against them.
 
 ## IG Publication
@@ -181,6 +193,48 @@ Notes:
 # List scheduled jobs
 ./meta --profile prod ig publish schedule list --status scheduled
 ```
+
+## IG Insights
+```bash
+# Fetch raw Instagram account insights
+./meta --profile prod ig insights account run \
+  --metric profile_views \
+  --period day \
+  --metric-type total_value \
+  --since 2026-03-14 \
+  --until 2026-03-21 \
+  --format json
+
+# Discover recent media ids plus identity fields for follow-up insights calls
+./meta --profile prod ig insights media list \
+  --limit 10 \
+  --format json
+
+# Fetch raw organic media insights for one or more posts
+./meta --profile prod ig insights media run \
+  --media-id <MEDIA_ID> \
+  --metric profile_visits \
+  --period lifetime \
+  --format json
+
+# Fetch Instagram account local-intent summary plus raw metric payloads
+./meta --profile prod ig insights account local-intent \
+  --since 2026-03-14 \
+  --until 2026-03-21 \
+  --format json
+
+# Combine paid Instagram Ads Insights with Instagram account local-intent metrics
+./meta --profile prod ig insights local-intent \
+  --account-id <AD_ACCOUNT_ID> \
+  --date-preset last_7d \
+  --format json
+```
+
+Notes:
+- `ig insights account run` stays close to the raw Instagram account-insights metric objects returned by Graph.
+- `ig insights media run` uses the Instagram media insights surface, which Meta documents as organic-only.
+- `ig insights account local-intent` preserves raw metric objects and adds normalized summary fields like `calls`, `directions`, `email_contacts`, `text_contacts`, `book_now`, and `profile_views` when the corresponding contact button breakdowns are present.
+- `ig insights local-intent` returns a layered object with `paid_instagram`, `instagram_account`, and a merged `summary` so the paid and Instagram-account surfaces stay distinguishable.
 
 **Cron setup** (run every 30 minutes):
 ```

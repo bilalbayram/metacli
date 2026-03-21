@@ -30,6 +30,14 @@ func TestNewInsightsCommandIncludesAccountsSubcommand(t *testing.T) {
 	if listCmd == nil || listCmd.Name() != "list" {
 		t.Fatalf("expected accounts list subcommand, got %v", listCmd)
 	}
+
+	actionTypesCmd, _, err := cmd.Find([]string{"action-types"})
+	if err != nil {
+		t.Fatalf("find action-types subcommand: %v", err)
+	}
+	if actionTypesCmd == nil || actionTypesCmd.Name() != "action-types" {
+		t.Fatalf("expected action-types subcommand, got %v", actionTypesCmd)
+	}
 }
 
 func TestInsightsRunMissingAccountIDIncludesGuidance(t *testing.T) {
@@ -116,6 +124,160 @@ func TestInsightsRunQualityMetricPackRequestsExpandedFields(t *testing.T) {
 	}
 	if got := requestURL.Query().Get("fields"); got != strings.Join(insightsQualityMetricPackFields, ",") {
 		t.Fatalf("unexpected fields query: %q", got)
+	}
+}
+
+func TestInsightsRunLocalIntentMetricPackAddsFlatAliases(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[{"campaign_id":"1","actions":[
+{"action_type":"onsite_conversion.business_address_tap","value":"12"},
+{"action_type":"onsite_conversion.call","value":"4"},
+{"action_type":"onsite_conversion.get_directions","value":"7"},
+{"action_type":"onsite_conversion.profile_visit","value":"18"}
+],"cost_per_action_type":[{"action_type":"onsite_conversion.business_address_tap","value":"1.75"}]}]}`,
+	}
+	useInsightsStubDependencies(t, stub)
+
+	cmd := newInsightsRunCommand(testRuntime("prod"))
+	output := &bytes.Buffer{}
+	cmd.SetOut(output)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--account-id", "123",
+		"--metric-pack", "local_intent",
+		"--format", "json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute insights run: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if got := requestURL.Query().Get("fields"); got != strings.Join(insightsLocalIntentMetricPackFields, ",") {
+		t.Fatalf("unexpected fields query: %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta insights run")
+	data, ok := envelope["data"].([]any)
+	if !ok || len(data) != 1 {
+		t.Fatalf("expected one row in envelope, got %#v", envelope["data"])
+	}
+	row, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object row, got %T", data[0])
+	}
+	if got := row["address_taps"]; got != float64(12) {
+		t.Fatalf("unexpected address_taps %#v", got)
+	}
+	if got := row["calls"]; got != float64(4) {
+		t.Fatalf("unexpected calls %#v", got)
+	}
+	if got := row["directions"]; got != float64(7) {
+		t.Fatalf("unexpected directions %#v", got)
+	}
+	if got := row["profile_visits"]; got != float64(18) {
+		t.Fatalf("unexpected profile_visits %#v", got)
+	}
+	if _, ok := row["actions"].([]any); !ok {
+		t.Fatalf("expected raw actions to be preserved, got %T", row["actions"])
+	}
+	if _, ok := row["cost_per_action_type"].([]any); !ok {
+		t.Fatalf("expected raw cost_per_action_type to be preserved, got %T", row["cost_per_action_type"])
+	}
+}
+
+func TestInsightsRunAcceptsJSONFormatAndAccountLevel(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response:   `{"data":[{"account_id":"123"}]}`,
+	}
+	useInsightsStubDependencies(t, stub)
+
+	cmd := newInsightsRunCommand(testRuntime("prod"))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--account-id", "123",
+		"--level", "account",
+		"--format", "json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute insights run: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if got := requestURL.Query().Get("level"); got != "account" {
+		t.Fatalf("unexpected level query: %q", got)
+	}
+}
+
+func TestInsightsActionTypesReturnsStructuredDiscoveryOutput(t *testing.T) {
+	stub := &stubHTTPClient{
+		t:          t,
+		statusCode: http.StatusOK,
+		response: `{"data":[{"actions":[
+{"action_type":"onsite_conversion.business_address_tap","value":"12"},
+{"action_type":"link_click","value":"9"}
+],"cost_per_action_type":[
+{"action_type":"onsite_conversion.business_address_tap","value":"1.75"}
+]}]}`,
+	}
+	useInsightsStubDependencies(t, stub)
+
+	cmd := newInsightsActionTypesCommand(testRuntime("prod"))
+	output := &bytes.Buffer{}
+	cmd.SetOut(output)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--account-id", "123"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute insights action-types: %v", err)
+	}
+
+	requestURL, err := url.Parse(stub.lastURL)
+	if err != nil {
+		t.Fatalf("parse request url: %v", err)
+	}
+	if got := requestURL.Query().Get("level"); got != "ad" {
+		t.Fatalf("unexpected level query: %q", got)
+	}
+	if got := requestURL.Query().Get("fields"); got != strings.Join(insightsActionDiscoveryFields, ",") {
+		t.Fatalf("unexpected fields query: %q", got)
+	}
+
+	envelope := decodeEnvelope(t, output.Bytes())
+	assertEnvelopeBasics(t, envelope, "meta insights action-types")
+	data, ok := envelope["data"].([]any)
+	if !ok || len(data) != 2 {
+		t.Fatalf("expected two discovered action types, got %#v", envelope["data"])
+	}
+	first, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object record, got %T", data[0])
+	}
+	if got := first["action_type"]; got != "link_click" {
+		t.Fatalf("unexpected first action type %#v", got)
+	}
+	second, ok := data[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object record, got %T", data[1])
+	}
+	if got := second["action_type"]; got != "onsite_conversion.business_address_tap" {
+		t.Fatalf("unexpected second action type %#v", got)
+	}
+	if got := second["normalized_field"]; got != "address_taps" {
+		t.Fatalf("unexpected normalized field %#v", got)
 	}
 }
 

@@ -46,6 +46,25 @@ var insightsQualityMetricPackFields = []string{
 	"outbound_clicks_ctr",
 }
 
+var insightsLocalIntentMetricPackFields = []string{
+	"account_id",
+	"campaign_id",
+	"campaign_name",
+	"adset_id",
+	"adset_name",
+	"ad_id",
+	"ad_name",
+	"date_start",
+	"date_stop",
+	"actions",
+	"cost_per_action_type",
+}
+
+var insightsActionDiscoveryFields = []string{
+	"actions",
+	"cost_per_action_type",
+}
+
 const insightsAccountsListFields = "id,account_id,name,account_status,currency,timezone_name"
 
 func NewInsightsCommand(runtime Runtime) *cobra.Command {
@@ -55,6 +74,7 @@ func NewInsightsCommand(runtime Runtime) *cobra.Command {
 	}
 	insightsCmd.AddCommand(newInsightsAccountsCommand(runtime))
 	insightsCmd.AddCommand(newInsightsRunCommand(runtime))
+	insightsCmd.AddCommand(newInsightsActionTypesCommand(runtime))
 	return insightsCmd
 }
 
@@ -85,8 +105,17 @@ func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 			if accountID == "" {
 				return missingInsightsAccountIDError(profile)
 			}
+			level, err := normalizeInsightsLevel(level)
+			if err != nil {
+				return err
+			}
 
-			fields, err := insightsFieldsForMetricPack(metricPack)
+			metricPack, err = normalizeInsightsMetricPack(metricPack)
+			if err != nil {
+				return err
+			}
+			fields := insightsFieldsForMetricPack(metricPack)
+			format, err = normalizeInsightsFormat(format)
 			if err != nil {
 				return err
 			}
@@ -117,29 +146,102 @@ func newInsightsRunCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if metricPack == "local_intent" {
+				result.Rows = insights.NormalizeLocalIntentRows(result.Rows)
+			}
 
-			env, err := output.NewEnvelope("meta insights run", true, result.Rows, result.Pagination, nil, nil)
-			if err != nil {
-				return err
-			}
-			switch strings.ToLower(strings.TrimSpace(format)) {
-			case "jsonl", "csv":
-				return output.Write(cmd.OutOrStdout(), format, env)
-			default:
-				return errors.New("invalid --format value: expected csv|jsonl")
-			}
+			return writeInsightsOutput(cmd, "meta insights run", format, result.Rows, result.Pagination)
 		},
 	}
 	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
 	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id without act_ prefix")
-	cmd.Flags().StringVar(&level, "level", "campaign", "Insights level: campaign|adset|ad")
+	cmd.Flags().StringVar(&level, "level", "campaign", "Insights level: account|campaign|adset|ad")
 	cmd.Flags().StringVar(&datePreset, "date-preset", "last_7d", "Date preset (for example last_7d)")
 	cmd.Flags().StringVar(&breakdowns, "breakdowns", "", "Comma-separated breakdowns")
 	cmd.Flags().StringVar(&attribution, "attribution", "", "Comma-separated action attribution windows")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Limit total rows returned")
 	cmd.Flags().BoolVar(&async, "async", false, "Run insights asynchronously")
-	cmd.Flags().StringVar(&metricPack, "metric-pack", "basic", "Metric pack: basic|quality")
-	cmd.Flags().StringVar(&format, "format", "jsonl", "Export format: csv|jsonl")
+	cmd.Flags().StringVar(&metricPack, "metric-pack", "basic", "Metric pack: basic|quality|local_intent")
+	cmd.Flags().StringVar(&format, "format", "jsonl", "Export format: json|jsonl|csv")
+	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
+	return cmd
+}
+
+func newInsightsActionTypesCommand(runtime Runtime) *cobra.Command {
+	var (
+		profile     string
+		accountID   string
+		level       string
+		datePreset  string
+		attribution string
+		limit       int
+		async       bool
+		format      string
+		version     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "action-types",
+		Short: "Discover raw action types returned by insights",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if profile == "" {
+				profile = runtime.ProfileName()
+			}
+			if profile == "" {
+				return errors.New("profile is required (--profile or global --profile)")
+			}
+			if accountID == "" {
+				return missingInsightsAccountIDError(profile)
+			}
+
+			var err error
+			level, err = normalizeInsightsLevel(level)
+			if err != nil {
+				return err
+			}
+			format, err = normalizeInsightsFormat(format)
+			if err != nil {
+				return err
+			}
+
+			creds, err := insightsLoadProfileCredentials(profile)
+			if err != nil {
+				return err
+			}
+			if version == "" {
+				version = creds.Profile.GraphVersion
+			}
+			if version == "" {
+				version = config.DefaultGraphVersion
+			}
+
+			client := insightsNewGraphClient()
+			service := insightsNewService(client)
+			result, err := service.Run(cmd.Context(), version, creds.Token, creds.AppSecret, insights.RunOptions{
+				AccountID:   accountID,
+				Level:       level,
+				DatePreset:  datePreset,
+				Attribution: csvToSlice(attribution),
+				Fields:      insightsActionDiscoveryFields,
+				Limit:       limit,
+				Async:       async,
+			})
+			if err != nil {
+				return err
+			}
+
+			return writeInsightsOutput(cmd, "meta insights action-types", format, insights.DiscoverActionTypes(result.Rows), result.Pagination)
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "Profile name")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Ad account id without act_ prefix")
+	cmd.Flags().StringVar(&level, "level", "ad", "Insights level: account|campaign|adset|ad")
+	cmd.Flags().StringVar(&datePreset, "date-preset", "last_30d", "Date preset (for example last_30d)")
+	cmd.Flags().StringVar(&attribution, "attribution", "", "Comma-separated action attribution windows")
+	cmd.Flags().IntVar(&limit, "limit", 0, "Limit total rows returned before aggregation")
+	cmd.Flags().BoolVar(&async, "async", false, "Run insights asynchronously")
+	cmd.Flags().StringVar(&format, "format", "json", "Export format: json|jsonl|csv")
 	cmd.Flags().StringVar(&version, "version", "", "Graph API version")
 	return cmd
 }
@@ -225,16 +327,55 @@ func missingInsightsAccountIDError(profile string) error {
 	return fmt.Errorf("account id is required (--account-id). discover active accounts with: %s", suggestion)
 }
 
-func insightsFieldsForMetricPack(metricPack string) ([]string, error) {
+func insightsFieldsForMetricPack(metricPack string) []string {
+	switch metricPack {
+	case "quality":
+		return append([]string(nil), insightsQualityMetricPackFields...)
+	case "local_intent":
+		return append([]string(nil), insightsLocalIntentMetricPackFields...)
+	default:
+		return nil
+	}
+}
+
+func normalizeInsightsMetricPack(metricPack string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(metricPack))
 	switch normalized {
 	case "", "basic":
-		return nil, nil
-	case "quality":
-		return append([]string(nil), insightsQualityMetricPackFields...), nil
+		return "basic", nil
+	case "quality", "local_intent":
+		return normalized, nil
 	default:
-		return nil, errors.New("invalid --metric-pack value: expected basic|quality")
+		return "", errors.New("invalid --metric-pack value: expected basic|quality|local_intent")
 	}
+}
+
+func normalizeInsightsLevel(level string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(level))
+	switch normalized {
+	case "account", "campaign", "adset", "ad":
+		return normalized, nil
+	default:
+		return "", errors.New("invalid --level value: expected account|campaign|adset|ad")
+	}
+}
+
+func normalizeInsightsFormat(format string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(format))
+	switch normalized {
+	case "json", "jsonl", "csv":
+		return normalized, nil
+	default:
+		return "", errors.New("invalid --format value: expected json|jsonl|csv")
+	}
+}
+
+func writeInsightsOutput(cmd *cobra.Command, commandName string, format string, data any, paging any) error {
+	env, err := output.NewEnvelope(commandName, true, data, paging, nil, nil)
+	if err != nil {
+		return err
+	}
+	return output.Write(cmd.OutOrStdout(), format, env)
 }
 
 func filterActiveAdAccounts(items []map[string]any) []map[string]any {

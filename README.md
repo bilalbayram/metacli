@@ -7,7 +7,7 @@ Meta Marketing CLI is a developer-first, fail-closed command-line interface for 
 - Keychain-only secret storage (no env/plaintext fallback)
 - Fail-closed profile preflight before operational commands
 - Direct Graph API access (`api get/post/delete/batch`)
-- Insights account discovery and quality metric packs (`insights accounts list`, `insights run --metric-pack quality`)
+- Insights account discovery, raw action-type discovery, and metric packs (`insights accounts list`, `insights action-types`, `insights run --metric-pack quality|local_intent`)
 - Campaign, ad set, ad, creative (image + video), audience, and catalog workflows
 - Budget mutation guardrails for spend-changing writes
 - Instagram media upload, status, publish, and schedule lifecycle
@@ -125,12 +125,29 @@ Schema-aware commands look in `~/.meta/schema-packs` by default. Run `./meta sch
   --level campaign \
   --metric-pack quality \
   --format jsonl
+
+# Discover raw action types returned by actions and cost_per_action_type
+./meta --profile prod insights action-types \
+  --account-id <AD_ACCOUNT_ID> \
+  --date-preset last_30d \
+  --level ad \
+  --format json
+
+# Run local-intent insights and keep raw action arrays plus flat aliases
+./meta --profile prod insights run \
+  --account-id <AD_ACCOUNT_ID> \
+  --date-preset last_30d \
+  --level campaign \
+  --metric-pack local_intent \
+  --format json
 ```
 
 Notes:
 - `insights run` still fails closed when `--account-id` is missing.
 - `--metric-pack basic` keeps the previous default behavior.
 - `--metric-pack quality` requests expanded fields (CTR, CPC, CPM, reach/frequency, actions, and related cost metrics).
+- `--metric-pack local_intent` preserves raw `actions` and `cost_per_action_type`, then adds flat alias fields like `address_taps`, `calls`, `directions`, and `profile_visits` when those raw action types are present.
+- `insights action-types` is the quickest way to discover which raw `action_type` values your account is returning before you automate against them.
 
 ## IG Publication
 ```bash

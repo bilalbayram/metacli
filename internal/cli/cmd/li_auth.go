@@ -19,6 +19,7 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 		clientSecret string
 		version      string
 		scopesRaw    string
+		authFlow     string
 		listenAddr   string
 		redirectURI  string
 		timeout      time.Duration
@@ -48,7 +49,7 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return writeCommandErrorWithProvider(cmd, runtime, "meta li auth setup", err, linkedInEnvelopeProvider(resolvedVersion))
 			}
-			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, resolvedRedirectURI, csvToSlice(scopesRaw), timeout, openBrowser))
+			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, resolvedRedirectURI, csvToSlice(scopesRaw), authFlow, timeout, openBrowser))
 			if err != nil {
 				return writeCommandErrorWithProvider(cmd, runtime, "meta li auth setup", err, linkedInEnvelopeProvider(resolvedVersion))
 			}
@@ -61,6 +62,7 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "LinkedIn application client secret")
 	cmd.Flags().StringVar(&version, "linkedin-version", "", "LinkedIn API version header (YYYYMM)")
 	cmd.Flags().StringVar(&scopesRaw, "scopes", "", "Comma-separated OAuth scopes")
+	cmd.Flags().StringVar(&authFlow, "auth-flow", string(linkedin.AuthFlowStandard), "LinkedIn authorization flow: standard|native-pkce")
 	cmd.Flags().StringVar(&listenAddr, "listen-addr", defaultAuthListenAddr, "Local callback listener address")
 	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "OAuth redirect URI; defaults to http://<listen-addr>/oauth/callback")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultAuthTimeout, "OAuth callback timeout")
@@ -267,11 +269,12 @@ func bootstrapLinkedInProfile(profileName string, clientID string, clientSecret 
 	return resolvedVersion, nil
 }
 
-func linkedinSetupInput(profileName string, redirectURI string, scopes []string, timeout time.Duration, openBrowser bool) linkedin.SetupInput {
+func linkedinSetupInput(profileName string, redirectURI string, scopes []string, authFlow string, timeout time.Duration, openBrowser bool) linkedin.SetupInput {
 	_ = profileName
 	return linkedin.SetupInput{
 		RedirectURI: strings.TrimSpace(redirectURI),
 		Scopes:      scopes,
+		AuthFlow:    strings.TrimSpace(authFlow),
 		OpenBrowser: openBrowser,
 		Timeout:     timeout,
 	}

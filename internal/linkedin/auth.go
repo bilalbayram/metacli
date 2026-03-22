@@ -19,12 +19,20 @@ const (
 	ProviderLinkedIn              = "linkedin"
 	DefaultAuthBaseURL            = "https://www.linkedin.com"
 	DefaultAPIBaseURL             = "https://api.linkedin.com"
-	authorizationEndpointPath     = "/oauth/native-pkce/authorization"
+	standardAuthorizationPath     = "/oauth/v2/authorization"
+	nativePKCEAuthorizationPath   = "/oauth/native-pkce/authorization"
 	tokenEndpointPath             = "/oauth/v2/accessToken"
 	meEndpointPath                = "/v2/me"
 	restLiProtocolVersion         = "2.0.0"
 	defaultRefreshExpirySkew      = 0
 	defaultRequestTimeoutFallback = 30 * time.Second
+)
+
+type AuthFlow string
+
+const (
+	AuthFlowStandard   AuthFlow = "standard"
+	AuthFlowNativePKCE AuthFlow = "native-pkce"
 )
 
 type HTTPClient interface {
@@ -63,6 +71,7 @@ type SetupInput struct {
 	Profile     string
 	RedirectURI string
 	Scopes      []string
+	AuthFlow    string
 	OpenBrowser bool
 	Timeout     time.Duration
 }
@@ -70,6 +79,7 @@ type SetupInput struct {
 type SetupResult struct {
 	ProfileName string        `json:"profile_name"`
 	State       string        `json:"state"`
+	AuthFlow    string        `json:"auth_flow"`
 	AuthURL     string        `json:"auth_url"`
 	RedirectURI string        `json:"redirect_uri"`
 	Token       TokenBundle   `json:"token"`
@@ -161,16 +171,28 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		input.Timeout = 180 * time.Second
 	}
 
-	clientSecret, err := s.loadSecret(profile.ClientSecretRef)
-	if err != nil {
-		return nil, fmt.Errorf("load client secret for profile %q: %w", profileName, err)
-	}
-	_ = clientSecret
-
-	codeVerifier, codeChallenge, err := newPKCE()
+	authFlow, err := normalizeAuthFlow(input.AuthFlow)
 	if err != nil {
 		return nil, err
 	}
+
+	clientSecret := ""
+	if authFlow == AuthFlowStandard {
+		clientSecret, err = s.loadSecret(profile.ClientSecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("load client secret for profile %q: %w", profileName, err)
+		}
+	}
+
+	codeVerifier := ""
+	codeChallenge := ""
+	if authFlow == AuthFlowNativePKCE {
+		codeVerifier, codeChallenge, err = newPKCE()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	state, err := newState()
 	if err != nil {
 		return nil, err
@@ -189,7 +211,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		scopes = normalizeScopes(profile.Scopes)
 	}
 
-	authURL, err := buildAuthorizationURL(s.AuthBaseURL, profile.ClientID, listener.RedirectURI(), scopes, codeChallenge, state)
+	authURL, err := buildAuthorizationURL(s.AuthBaseURL, profile.ClientID, listener.RedirectURI(), scopes, codeChallenge, state, authFlow)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +227,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		return nil, err
 	}
 
-	token, err := s.exchangeAuthorizationCode(ctx, profile, code, codeVerifier, listener.RedirectURI())
+	token, err := s.exchangeAuthorizationCode(ctx, profile, code, codeVerifier, listener.RedirectURI(), clientSecret, authFlow)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +244,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 	return &SetupResult{
 		ProfileName: profileName,
 		State:       state,
+		AuthFlow:    string(authFlow),
 		AuthURL:     authURL,
 		RedirectURI: listener.RedirectURI(),
 		Token:       token,
@@ -281,13 +304,26 @@ func (s *Service) WhoAmIWithToken(ctx context.Context, version string, accessTok
 	return parseWhoAmI(payload), nil
 }
 
-func (s *Service) exchangeAuthorizationCode(ctx context.Context, profile Profile, code string, codeVerifier string, redirectURI string) (TokenBundle, error) {
+func (s *Service) exchangeAuthorizationCode(ctx context.Context, profile Profile, code string, codeVerifier string, redirectURI string, clientSecret string, authFlow AuthFlow) (TokenBundle, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	form.Set("redirect_uri", redirectURI)
 	form.Set("client_id", profile.ClientID)
-	form.Set("code_verifier", codeVerifier)
+	switch authFlow {
+	case AuthFlowStandard:
+		if strings.TrimSpace(clientSecret) == "" {
+			return TokenBundle{}, errors.New("client secret is required for LinkedIn standard auth flow")
+		}
+		form.Set("client_secret", clientSecret)
+	case AuthFlowNativePKCE:
+		if strings.TrimSpace(codeVerifier) == "" {
+			return TokenBundle{}, errors.New("code verifier is required for LinkedIn native PKCE auth flow")
+		}
+		form.Set("code_verifier", codeVerifier)
+	default:
+		return TokenBundle{}, fmt.Errorf("unsupported LinkedIn auth flow %q", authFlow)
+	}
 
 	var payload tokenEndpointResponse
 	if err := s.doTokenRequest(ctx, form, &payload); err != nil {
@@ -511,15 +547,12 @@ func (s *Service) doRequest(req *http.Request, out any) error {
 	return nil
 }
 
-func buildAuthorizationURL(authBaseURL string, clientID string, redirectURI string, scopes []string, codeChallenge string, state string) (string, error) {
+func buildAuthorizationURL(authBaseURL string, clientID string, redirectURI string, scopes []string, codeChallenge string, state string, authFlow AuthFlow) (string, error) {
 	if strings.TrimSpace(clientID) == "" {
 		return "", errors.New("client id is required")
 	}
 	if strings.TrimSpace(redirectURI) == "" {
 		return "", errors.New("redirect uri is required")
-	}
-	if strings.TrimSpace(codeChallenge) == "" {
-		return "", errors.New("code challenge is required")
 	}
 	if strings.TrimSpace(state) == "" {
 		return "", errors.New("state is required")
@@ -529,20 +562,43 @@ func buildAuthorizationURL(authBaseURL string, clientID string, redirectURI stri
 	if err != nil {
 		return "", fmt.Errorf("parse linkedin auth base url: %w", err)
 	}
-	endpoint.Path = authorizationEndpointPath
+	switch authFlow {
+	case AuthFlowStandard:
+		endpoint.Path = standardAuthorizationPath
+	case AuthFlowNativePKCE:
+		if strings.TrimSpace(codeChallenge) == "" {
+			return "", errors.New("code challenge is required")
+		}
+		endpoint.Path = nativePKCEAuthorizationPath
+	default:
+		return "", fmt.Errorf("unsupported LinkedIn auth flow %q", authFlow)
+	}
 
 	values := url.Values{}
 	values.Set("response_type", "code")
 	values.Set("client_id", clientID)
 	values.Set("redirect_uri", redirectURI)
 	values.Set("state", state)
-	values.Set("code_challenge", codeChallenge)
-	values.Set("code_challenge_method", "S256")
+	if authFlow == AuthFlowNativePKCE {
+		values.Set("code_challenge", codeChallenge)
+		values.Set("code_challenge_method", "S256")
+	}
 	if len(scopes) > 0 {
 		values.Set("scope", strings.Join(normalizeScopes(scopes), " "))
 	}
 	endpoint.RawQuery = values.Encode()
 	return endpoint.String(), nil
+}
+
+func normalizeAuthFlow(raw string) (AuthFlow, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(AuthFlowStandard):
+		return AuthFlowStandard, nil
+	case string(AuthFlowNativePKCE):
+		return AuthFlowNativePKCE, nil
+	default:
+		return "", fmt.Errorf("unsupported LinkedIn auth flow %q (expected %q or %q)", raw, AuthFlowStandard, AuthFlowNativePKCE)
+	}
 }
 
 func parseTokenBundle(now time.Time, response tokenEndpointResponse) (TokenBundle, error) {

@@ -85,7 +85,7 @@ func (f *fakeOAuthListener) Close(_ context.Context) error {
 	return nil
 }
 
-func TestBuildAuthorizationURLIncludesStateAndScopes(t *testing.T) {
+func TestBuildAuthorizationURLStandardFlowIncludesStateAndScopes(t *testing.T) {
 	t.Parallel()
 
 	raw, err := buildAuthorizationURL(
@@ -93,8 +93,9 @@ func TestBuildAuthorizationURLIncludesStateAndScopes(t *testing.T) {
 		"client-123",
 		"http://127.0.0.1:3456/callback",
 		[]string{"r_ads", "r_basicprofile"},
-		"challenge-123",
+		"",
 		"state-123",
+		AuthFlowStandard,
 	)
 	if err != nil {
 		t.Fatalf("build authorization url: %v", err)
@@ -104,7 +105,7 @@ func TestBuildAuthorizationURLIncludesStateAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization url: %v", err)
 	}
-	if parsed.Path != "/oauth/native-pkce/authorization" {
+	if parsed.Path != "/oauth/v2/authorization" {
 		t.Fatalf("unexpected path: %s", parsed.Path)
 	}
 
@@ -121,10 +122,10 @@ func TestBuildAuthorizationURLIncludesStateAndScopes(t *testing.T) {
 	if got := query.Get("state"); got != "state-123" {
 		t.Fatalf("unexpected state: %s", got)
 	}
-	if got := query.Get("code_challenge"); got != "challenge-123" {
+	if got := query.Get("code_challenge"); got != "" {
 		t.Fatalf("unexpected code_challenge: %s", got)
 	}
-	if got := query.Get("code_challenge_method"); got != "S256" {
+	if got := query.Get("code_challenge_method"); got != "" {
 		t.Fatalf("unexpected code_challenge_method: %s", got)
 	}
 	if got := query.Get("scope"); got != "r_ads r_basicprofile" {
@@ -132,7 +133,40 @@ func TestBuildAuthorizationURLIncludesStateAndScopes(t *testing.T) {
 	}
 }
 
-func TestSetupPersistsTokensAndWhoAmI(t *testing.T) {
+func TestBuildAuthorizationURLNativePKCEIncludesChallenge(t *testing.T) {
+	t.Parallel()
+
+	raw, err := buildAuthorizationURL(
+		DefaultAuthBaseURL,
+		"client-123",
+		"http://127.0.0.1:3456/callback",
+		[]string{"r_ads", "r_basicprofile"},
+		"challenge-123",
+		"state-123",
+		AuthFlowNativePKCE,
+	)
+	if err != nil {
+		t.Fatalf("build authorization url: %v", err)
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse authorization url: %v", err)
+	}
+	if parsed.Path != "/oauth/native-pkce/authorization" {
+		t.Fatalf("unexpected path: %s", parsed.Path)
+	}
+
+	query := parsed.Query()
+	if got := query.Get("code_challenge"); got != "challenge-123" {
+		t.Fatalf("unexpected code_challenge: %s", got)
+	}
+	if got := query.Get("code_challenge_method"); got != "S256" {
+		t.Fatalf("unexpected code_challenge_method: %s", got)
+	}
+}
+
+func TestSetupPersistsTokensAndWhoAmIWithStandardFlow(t *testing.T) {
 	profiles := newMemoryProfileStore()
 	secrets := newMemorySecretStore()
 
@@ -153,20 +187,14 @@ func TestSetupPersistsTokensAndWhoAmI(t *testing.T) {
 		t.Fatalf("seed secret: %v", err)
 	}
 
-	originalPKCE := newPKCE
 	originalState := newState
 	originalListener := newListener
 	originalBrowser := openBrowser
 	defer func() {
-		newPKCE = originalPKCE
 		newState = originalState
 		newListener = originalListener
 		openBrowser = originalBrowser
 	}()
-
-	newPKCE = func() (string, string, error) {
-		return "verifier-123", "challenge-123", nil
-	}
 	newState = func() (string, error) {
 		return "state-123", nil
 	}
@@ -211,7 +239,10 @@ func TestSetupPersistsTokensAndWhoAmI(t *testing.T) {
 			if got := r.PostForm.Get("client_id"); got != "client-123" {
 				t.Fatalf("unexpected client_id: %s", got)
 			}
-			if got := r.PostForm.Get("code_verifier"); got != "verifier-123" {
+			if got := r.PostForm.Get("client_secret"); got != "secret-123" {
+				t.Fatalf("unexpected client_secret: %s", got)
+			}
+			if got := r.PostForm.Get("code_verifier"); got != "" {
 				t.Fatalf("unexpected code_verifier: %s", got)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -248,6 +279,9 @@ func TestSetupPersistsTokensAndWhoAmI(t *testing.T) {
 	if openedURL == "" {
 		t.Fatal("expected browser to be opened")
 	}
+	if !strings.Contains(openedURL, "/oauth/v2/authorization") {
+		t.Fatalf("unexpected authorization url: %s", openedURL)
+	}
 	if !strings.Contains(openedURL, "state=state-123") {
 		t.Fatalf("unexpected authorization url: %s", openedURL)
 	}
@@ -270,8 +304,103 @@ func TestSetupPersistsTokensAndWhoAmI(t *testing.T) {
 	if result == nil || result.Token.AccessToken != "access-123" {
 		t.Fatalf("unexpected setup token result: %#v", result)
 	}
+	if result.AuthFlow != string(AuthFlowStandard) {
+		t.Fatalf("unexpected auth flow: %s", result.AuthFlow)
+	}
 	if result.WhoAmI == nil || result.WhoAmI.FullName != "Ada Lovelace" {
 		t.Fatalf("unexpected whoami result: %#v", result.WhoAmI)
+	}
+}
+
+func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
+	profiles := newMemoryProfileStore()
+	secrets := newMemorySecretStore()
+
+	profileName := "prod"
+	err := profiles.Upsert(profileName, Profile{
+		Provider:        ProviderLinkedIn,
+		LinkedInVersion: "202602",
+		ClientID:        "client-123",
+		ClientSecretRef: "secret-ref",
+		AccessTokenRef:  "access-ref",
+		RefreshTokenRef: "refresh-ref",
+		Scopes:          []string{"r_ads"},
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if err := secrets.Set("secret-ref", "secret-123"); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	originalPKCE := newPKCE
+	originalState := newState
+	originalListener := newListener
+	originalBrowser := openBrowser
+	defer func() {
+		newPKCE = originalPKCE
+		newState = originalState
+		newListener = originalListener
+		openBrowser = originalBrowser
+	}()
+
+	newPKCE = func() (string, string, error) {
+		return "verifier-123", "challenge-123", nil
+	}
+	newState = func() (string, error) {
+		return "state-123", nil
+	}
+
+	listener := &fakeOAuthListener{redirectURI: "http://127.0.0.1:3456/callback", code: "auth-code"}
+	var openedURL string
+	newListener = func(redirectURI string, state string) (oauthCodeListener, error) {
+		return listener, nil
+	}
+	openBrowser = func(raw string) error {
+		openedURL = raw
+		return nil
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/v2/accessToken":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			if got := r.PostForm.Get("code_verifier"); got != "verifier-123" {
+				t.Fatalf("unexpected code_verifier: %s", got)
+			}
+			if got := r.PostForm.Get("client_secret"); got != "" {
+				t.Fatalf("unexpected client_secret: %s", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-123","expires_in":3600,"scope":"r_ads"}`))
+		case "/v2/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"urn:li:person:abc","localizedFirstName":"Ada","localizedLastName":"Lovelace"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), server.URL, server.URL, profiles, secrets)
+	result, err := svc.Setup(context.Background(), profileName, SetupInput{
+		RedirectURI: "http://127.0.0.1:3456/callback",
+		Scopes:      []string{"r_ads"},
+		AuthFlow:    string(AuthFlowNativePKCE),
+		OpenBrowser: true,
+		Timeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !strings.Contains(openedURL, "/oauth/native-pkce/authorization") {
+		t.Fatalf("unexpected authorization url: %s", openedURL)
+	}
+	if result.AuthFlow != string(AuthFlowNativePKCE) {
+		t.Fatalf("unexpected auth flow: %s", result.AuthFlow)
 	}
 }
 

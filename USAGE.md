@@ -67,6 +67,11 @@ meta auth validate --profile prod
 
 Browser-based OAuth setup is the primary path.
 
+Auth flow selection:
+- `meta li auth setup` now defaults to the standard LinkedIn 3-legged OAuth endpoint: `https://www.linkedin.com/oauth/v2/authorization`
+- Use `--auth-flow native-pkce` only if LinkedIn has explicitly enabled PKCE-native auth for your app; that path uses `https://www.linkedin.com/oauth/native-pkce/authorization`
+- For most server-side or CLI operator workflows, the standard flow is the correct default
+
 Where `CLIENT_ID` and `CLIENT_SECRET` come from:
 - Go to the LinkedIn Developer Portal: `https://www.linkedin.com/developers/apps`
 - Create a new app, or open an existing app under `My Apps`
@@ -86,6 +91,7 @@ meta li auth setup \
   --profile li-prod \
   --client-id <CLIENT_ID> \
   --client-secret <CLIENT_SECRET> \
+  --auth-flow standard \
   --linkedin-version 202601 \
   --scopes <approved,comma-separated,LinkedIn,scopes> \
   --listen-addr 127.0.0.1:53682 \
@@ -173,6 +179,7 @@ meta li auth setup \
   --profile li-prod \
   --client-id <CLIENT_ID> \
   --client-secret <CLIENT_SECRET> \
+  --auth-flow standard \
   --linkedin-version 202601 \
   --scopes <approved,comma-separated,LinkedIn,scopes>
 

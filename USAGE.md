@@ -67,6 +67,20 @@ meta auth validate --profile prod
 
 Browser-based OAuth setup is the primary path.
 
+Where `CLIENT_ID` and `CLIENT_SECRET` come from:
+- Go to the LinkedIn Developer Portal: `https://www.linkedin.com/developers/apps`
+- Create a new app, or open an existing app under `My Apps`
+- If you create a new app, LinkedIn requires the usual app metadata first, including an app name, your organization's LinkedIn Page, a privacy policy URL, and an app logo
+- Open the app's `Auth` tab
+- Copy the `Client ID` and reveal/copy the `Client Secret` from the application credentials area
+- Add your OAuth callback URL under the same `Auth` tab before running `meta li auth setup`
+- If you do not see the marketing scopes you need, request the appropriate product access under the app's `Products` tab first; LinkedIn only exposes scopes that your app has been approved for
+- For Marketing API usage, also configure the allowed ad accounts from the app's `Products` tab when LinkedIn requires it for your tier
+
+Recommended minimum check before using the CLI:
+- confirm the app has the approved scopes you plan to request, such as `r_ads`, `rw_ads`, `r_ads_reporting`, or `r_marketing_leadgen_automation`
+- confirm the authenticated LinkedIn member has the required ad account or organization roles, otherwise auth may succeed but resource commands will still fail closed
+
 ```bash
 meta li auth setup \
   --profile li-prod \

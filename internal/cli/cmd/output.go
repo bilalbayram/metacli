@@ -5,12 +5,17 @@ import (
 	"fmt"
 
 	"github.com/bilalbayram/metacli/internal/graph"
+	"github.com/bilalbayram/metacli/internal/linkedin"
 	"github.com/bilalbayram/metacli/internal/output"
 	"github.com/spf13/cobra"
 )
 
 func writeSuccess(cmd *cobra.Command, runtime Runtime, commandName string, data any, paging any, rateLimit any) error {
-	envelope, err := output.NewEnvelope(commandName, true, data, paging, rateLimit, nil)
+	return writeSuccessWithProvider(cmd, runtime, commandName, data, paging, rateLimit, nil)
+}
+
+func writeSuccessWithProvider(cmd *cobra.Command, runtime Runtime, commandName string, data any, paging any, rateLimit any, provider *output.Provider) error {
+	envelope, err := output.NewEnvelopeWithProvider(commandName, true, data, paging, rateLimit, nil, provider)
 	if err != nil {
 		return err
 	}
@@ -18,6 +23,10 @@ func writeSuccess(cmd *cobra.Command, runtime Runtime, commandName string, data 
 }
 
 func writeCommandError(cmd *cobra.Command, runtime Runtime, commandName string, err error) error {
+	return writeCommandErrorWithProvider(cmd, runtime, commandName, err, nil)
+}
+
+func writeCommandErrorWithProvider(cmd *cobra.Command, runtime Runtime, commandName string, err error, provider *output.Provider) error {
 	if err == nil {
 		return nil
 	}
@@ -49,8 +58,20 @@ func writeCommandError(cmd *cobra.Command, runtime Runtime, commandName string, 
 			errorInfo.Remediation = mapRemediation(&remediation)
 		}
 	}
+	var linkedInErr *linkedin.APIError
+	if errors.As(err, &linkedInErr) {
+		errorInfo.Type = string(linkedInErr.Category)
+		errorInfo.StatusCode = linkedInErr.StatusCode
+		errorInfo.Message = linkedInErr.Message
+		errorInfo.Retryable = linkedInErr.Retryable
+		errorInfo.Diagnostics = cloneMap(linkedInErr.Diagnostics)
+		errorInfo.Remediation = &output.Remediation{
+			Category: string(linkedInErr.Category),
+			Summary:  linkedInErr.Message,
+		}
+	}
 
-	envelope, envErr := output.NewEnvelope(commandName, false, nil, nil, nil, errorInfo)
+	envelope, envErr := output.NewEnvelopeWithProvider(commandName, false, nil, nil, nil, errorInfo, provider)
 	if envErr != nil {
 		return fmt.Errorf("%w (secondary output error: %v)", err, envErr)
 	}

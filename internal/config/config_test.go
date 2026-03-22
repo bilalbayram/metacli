@@ -9,6 +9,7 @@ import (
 
 func validProfile() Profile {
 	return Profile{
+		Provider:        ProviderMeta,
 		Domain:          "marketing",
 		GraphVersion:    "v25.0",
 		TokenType:       "system_user",
@@ -22,6 +23,22 @@ func validProfile() Profile {
 		ExpiresAt:       "2026-12-31T00:00:00Z",
 		LastValidatedAt: "2026-01-15T00:00:00Z",
 		IGUserID:        "17841400000000000",
+	}
+}
+
+func validLinkedInProfile() Profile {
+	return Profile{
+		Provider:        ProviderLinkedIn,
+		Domain:          "marketing",
+		LinkedInVersion: DefaultLinkedInVersion,
+		ClientID:        "client-123",
+		TokenRef:        "keychain://meta-marketing-cli/prod/token",
+		ClientSecretRef: "keychain://meta-marketing-cli/prod/client_secret",
+		RefreshTokenRef: "keychain://meta-marketing-cli/prod/refresh_token",
+		Scopes:          []string{"r_ads", "rw_ads"},
+		IssuedAt:        "2026-01-01T00:00:00Z",
+		ExpiresAt:       "2026-12-31T00:00:00Z",
+		LastValidatedAt: "2026-01-15T00:00:00Z",
 	}
 }
 
@@ -53,6 +70,9 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if loaded.Profiles["prod"].TokenRef != "keychain://meta-marketing-cli/prod/token" {
 		t.Fatalf("unexpected token ref: %s", loaded.Profiles["prod"].TokenRef)
+	}
+	if loaded.Profiles["prod"].Provider != ProviderMeta {
+		t.Fatalf("unexpected provider: %s", loaded.Profiles["prod"].Provider)
 	}
 }
 
@@ -298,6 +318,88 @@ func TestUpsertProfileAllowsSupportedTokenTypes(t *testing.T) {
 
 			if err := cfg.UpsertProfile("prod", profile); err != nil {
 				t.Fatalf("upsert profile for token_type=%s: %v", tokenType, err)
+			}
+		})
+	}
+}
+
+func TestUpsertProfileDefaultsBlankProviderToMeta(t *testing.T) {
+	t.Parallel()
+
+	cfg := New()
+	profile := validProfile()
+	profile.Provider = ""
+
+	if err := cfg.UpsertProfile("prod", profile); err != nil {
+		t.Fatalf("upsert profile: %v", err)
+	}
+	if got := cfg.Profiles["prod"].Provider; got != ProviderMeta {
+		t.Fatalf("unexpected provider default: %q", got)
+	}
+}
+
+func TestUpsertProfileAllowsLinkedInProfiles(t *testing.T) {
+	t.Parallel()
+
+	cfg := New()
+	if err := cfg.UpsertProfile("li-prod", validLinkedInProfile()); err != nil {
+		t.Fatalf("upsert linkedin profile: %v", err)
+	}
+}
+
+func TestUpsertLinkedInProfileValidationFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mutate   func(*Profile)
+		wantText string
+	}{
+		{
+			name: "linkedin version format",
+			mutate: func(p *Profile) {
+				p.LinkedInVersion = "2026-01"
+			},
+			wantText: "linkedin_version must use YYYYMM format",
+		},
+		{
+			name: "client id required",
+			mutate: func(p *Profile) {
+				p.ClientID = ""
+			},
+			wantText: "client_id is required",
+		},
+		{
+			name: "client secret ref required",
+			mutate: func(p *Profile) {
+				p.ClientSecretRef = ""
+			},
+			wantText: "client_secret_ref is required",
+		},
+		{
+			name: "refresh token ref required",
+			mutate: func(p *Profile) {
+				p.RefreshTokenRef = ""
+			},
+			wantText: "refresh_token_ref is required",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := New()
+			profile := validLinkedInProfile()
+			tc.mutate(&profile)
+
+			err := cfg.UpsertProfile("li-prod", profile)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}

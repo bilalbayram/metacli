@@ -195,12 +195,15 @@ func TestSetupPersistsTokensAndWhoAmIWithStandardFlow(t *testing.T) {
 		newListener = originalListener
 		openBrowser = originalBrowser
 	}()
+	openBrowser = func(string) error {
+		t.Fatal("unexpected browser open")
+		return nil
+	}
 	newState = func() (string, error) {
 		return "state-123", nil
 	}
 
 	listener := &fakeOAuthListener{redirectURI: "http://127.0.0.1:3456/callback", code: "auth-code"}
-	var openedURL string
 	newListener = func(redirectURI string, state string) (oauthCodeListener, error) {
 		if redirectURI != "http://127.0.0.1:3456/callback" {
 			t.Fatalf("unexpected redirect uri: %s", redirectURI)
@@ -210,10 +213,7 @@ func TestSetupPersistsTokensAndWhoAmIWithStandardFlow(t *testing.T) {
 		}
 		return listener, nil
 	}
-	openBrowser = func(raw string) error {
-		openedURL = raw
-		return nil
-	}
+	var announcedURL string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -269,21 +269,24 @@ func TestSetupPersistsTokensAndWhoAmIWithStandardFlow(t *testing.T) {
 	result, err := svc.Setup(context.Background(), profileName, SetupInput{
 		RedirectURI: "http://127.0.0.1:3456/callback",
 		Scopes:      []string{"r_ads", "r_basicprofile"},
-		OpenBrowser: true,
+		OnAuthURL: func(raw string) {
+			announcedURL = raw
+		},
+		OpenBrowser: false,
 		Timeout:     time.Second,
 	})
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if openedURL == "" {
-		t.Fatal("expected browser to be opened")
+	if announcedURL == "" {
+		t.Fatal("expected auth URL to be announced")
 	}
-	if !strings.Contains(openedURL, "/oauth/v2/authorization") {
-		t.Fatalf("unexpected authorization url: %s", openedURL)
+	if !strings.Contains(announcedURL, "/oauth/v2/authorization") {
+		t.Fatalf("unexpected authorization url: %s", announcedURL)
 	}
-	if !strings.Contains(openedURL, "state=state-123") {
-		t.Fatalf("unexpected authorization url: %s", openedURL)
+	if !strings.Contains(announcedURL, "state=state-123") {
+		t.Fatalf("unexpected authorization url: %s", announcedURL)
 	}
 
 	access, err := secrets.Get("access-ref")
@@ -352,12 +355,11 @@ func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
 	}
 
 	listener := &fakeOAuthListener{redirectURI: "http://127.0.0.1:3456/callback", code: "auth-code"}
-	var openedURL string
+	var announcedURL string
 	newListener = func(redirectURI string, state string) (oauthCodeListener, error) {
 		return listener, nil
 	}
 	openBrowser = func(raw string) error {
-		openedURL = raw
 		return nil
 	}
 
@@ -389,6 +391,9 @@ func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
 		RedirectURI: "http://127.0.0.1:3456/callback",
 		Scopes:      []string{"r_ads"},
 		AuthFlow:    string(AuthFlowNativePKCE),
+		OnAuthURL: func(raw string) {
+			announcedURL = raw
+		},
 		OpenBrowser: true,
 		Timeout:     time.Second,
 	})
@@ -396,8 +401,8 @@ func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if !strings.Contains(openedURL, "/oauth/native-pkce/authorization") {
-		t.Fatalf("unexpected authorization url: %s", openedURL)
+	if !strings.Contains(announcedURL, "/oauth/native-pkce/authorization") {
+		t.Fatalf("unexpected authorization url: %s", announcedURL)
 	}
 	if result.AuthFlow != string(AuthFlowNativePKCE) {
 		t.Fatalf("unexpected auth flow: %s", result.AuthFlow)

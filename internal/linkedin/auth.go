@@ -72,6 +72,7 @@ type SetupInput struct {
 	RedirectURI string
 	Scopes      []string
 	AuthFlow    string
+	OnAuthURL   func(string)
 	OpenBrowser bool
 	Timeout     time.Duration
 }
@@ -214,6 +215,9 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 	authURL, err := buildAuthorizationURL(s.AuthBaseURL, profile.ClientID, listener.RedirectURI(), scopes, codeChallenge, state, authFlow)
 	if err != nil {
 		return nil, err
+	}
+	if input.OnAuthURL != nil {
+		input.OnAuthURL(authURL)
 	}
 
 	if input.OpenBrowser {

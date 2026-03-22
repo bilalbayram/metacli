@@ -49,7 +49,9 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return writeCommandErrorWithProvider(cmd, runtime, "meta li auth setup", err, linkedInEnvelopeProvider(resolvedVersion))
 			}
-			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, resolvedRedirectURI, csvToSlice(scopesRaw), authFlow, timeout, openBrowser))
+			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, resolvedRedirectURI, csvToSlice(scopesRaw), authFlow, timeout, openBrowser, func(authURL string) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Open this URL and complete LinkedIn login:\n%s\n", authURL)
+			}))
 			if err != nil {
 				return writeCommandErrorWithProvider(cmd, runtime, "meta li auth setup", err, linkedInEnvelopeProvider(resolvedVersion))
 			}
@@ -269,12 +271,13 @@ func bootstrapLinkedInProfile(profileName string, clientID string, clientSecret 
 	return resolvedVersion, nil
 }
 
-func linkedinSetupInput(profileName string, redirectURI string, scopes []string, authFlow string, timeout time.Duration, openBrowser bool) linkedin.SetupInput {
+func linkedinSetupInput(profileName string, redirectURI string, scopes []string, authFlow string, timeout time.Duration, openBrowser bool, onAuthURL func(string)) linkedin.SetupInput {
 	_ = profileName
 	return linkedin.SetupInput{
 		RedirectURI: strings.TrimSpace(redirectURI),
 		Scopes:      scopes,
 		AuthFlow:    strings.TrimSpace(authFlow),
+		OnAuthURL:   onAuthURL,
 		OpenBrowser: openBrowser,
 		Timeout:     timeout,
 	}

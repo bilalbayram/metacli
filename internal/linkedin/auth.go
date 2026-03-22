@@ -69,6 +69,7 @@ type Profile struct {
 
 type SetupInput struct {
 	Profile     string
+	ListenerURI string
 	RedirectURI string
 	Scopes      []string
 	AuthFlow    string
@@ -166,7 +167,9 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		return nil, err
 	}
 	if strings.TrimSpace(input.RedirectURI) == "" {
-		return nil, errors.New("redirect uri is required")
+		if strings.TrimSpace(input.ListenerURI) == "" {
+			return nil, errors.New("redirect uri is required")
+		}
 	}
 	if input.Timeout <= 0 {
 		input.Timeout = 180 * time.Second
@@ -174,6 +177,9 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 
 	authFlow, err := normalizeAuthFlow(input.AuthFlow)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateSetupRedirectURI(input.RedirectURI, authFlow); err != nil {
 		return nil, err
 	}
 
@@ -199,7 +205,12 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		return nil, err
 	}
 
-	listener, err := newListener(input.RedirectURI, state)
+	listenerURI := strings.TrimSpace(input.ListenerURI)
+	if listenerURI == "" {
+		listenerURI = strings.TrimSpace(input.RedirectURI)
+	}
+
+	listener, err := newListener(listenerURI, state)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +223,12 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		scopes = normalizeScopes(profile.Scopes)
 	}
 
-	authURL, err := buildAuthorizationURL(s.AuthBaseURL, profile.ClientID, listener.RedirectURI(), scopes, codeChallenge, state, authFlow)
+	oauthRedirectURI := strings.TrimSpace(input.RedirectURI)
+	if oauthRedirectURI == "" {
+		oauthRedirectURI = listener.RedirectURI()
+	}
+
+	authURL, err := buildAuthorizationURL(s.AuthBaseURL, profile.ClientID, oauthRedirectURI, scopes, codeChallenge, state, authFlow)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +247,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		return nil, err
 	}
 
-	token, err := s.exchangeAuthorizationCode(ctx, profile, code, codeVerifier, listener.RedirectURI(), clientSecret, authFlow)
+	token, err := s.exchangeAuthorizationCode(ctx, profile, code, codeVerifier, oauthRedirectURI, clientSecret, authFlow)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +266,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		State:       state,
 		AuthFlow:    string(authFlow),
 		AuthURL:     authURL,
-		RedirectURI: listener.RedirectURI(),
+		RedirectURI: oauthRedirectURI,
 		Token:       token,
 		WhoAmI:      whoami,
 		Refreshed:   false,
@@ -602,6 +618,40 @@ func normalizeAuthFlow(raw string) (AuthFlow, error) {
 		return AuthFlowNativePKCE, nil
 	default:
 		return "", fmt.Errorf("unsupported LinkedIn auth flow %q (expected %q or %q)", raw, AuthFlowStandard, AuthFlowNativePKCE)
+	}
+}
+
+func validateSetupRedirectURI(raw string, authFlow AuthFlow) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid redirect uri %q: %w", raw, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("invalid redirect uri %q: expected absolute URI", raw)
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+		if host == "127.0.0.1" || host == "localhost" {
+			return nil
+		}
+		if authFlow == AuthFlowStandard {
+			return fmt.Errorf("invalid redirect uri %q: standard flow requires https or loopback http (localhost/127.0.0.1)", raw)
+		}
+		return fmt.Errorf("invalid redirect uri %q: native-pkce flow requires https or loopback http (localhost/127.0.0.1)", raw)
+	default:
+		if authFlow == AuthFlowStandard {
+			return fmt.Errorf("invalid redirect uri %q: standard flow requires https or loopback http (localhost/127.0.0.1)", raw)
+		}
+		return fmt.Errorf("invalid redirect uri %q: native-pkce flow requires https or loopback http (localhost/127.0.0.1)", raw)
 	}
 }
 

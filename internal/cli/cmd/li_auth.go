@@ -35,9 +35,13 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return writeCommandError(cmd, runtime, "meta li auth setup", err)
 			}
+			listenerURI, err := localCallbackRedirectURI(listenAddr)
+			if err != nil {
+				return writeCommandError(cmd, runtime, "meta li auth setup", err)
+			}
 			resolvedRedirectURI := strings.TrimSpace(redirectURI)
 			if resolvedRedirectURI == "" {
-				resolvedRedirectURI = fmt.Sprintf("http://%s%s", strings.TrimSpace(listenAddr), defaultAuthCallbackPath)
+				resolvedRedirectURI = listenerURI
 			}
 
 			resolvedVersion, err := bootstrapLinkedInProfile(profileName, clientID, clientSecret, version, csvToSlice(scopesRaw))
@@ -49,7 +53,7 @@ func newLIAuthSetupCommand(runtime Runtime) *cobra.Command {
 			if err != nil {
 				return writeCommandErrorWithProvider(cmd, runtime, "meta li auth setup", err, linkedInEnvelopeProvider(resolvedVersion))
 			}
-			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, resolvedRedirectURI, csvToSlice(scopesRaw), authFlow, timeout, openBrowser, func(authURL string) {
+			result, err := svc.Setup(cmd.Context(), profileName, linkedinSetupInput(profileName, listenerURI, resolvedRedirectURI, csvToSlice(scopesRaw), authFlow, timeout, openBrowser, func(authURL string) {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Open this URL and complete LinkedIn login:\n%s\n", authURL)
 			}))
 			if err != nil {
@@ -271,9 +275,10 @@ func bootstrapLinkedInProfile(profileName string, clientID string, clientSecret 
 	return resolvedVersion, nil
 }
 
-func linkedinSetupInput(profileName string, redirectURI string, scopes []string, authFlow string, timeout time.Duration, openBrowser bool, onAuthURL func(string)) linkedin.SetupInput {
+func linkedinSetupInput(profileName string, listenerURI string, redirectURI string, scopes []string, authFlow string, timeout time.Duration, openBrowser bool, onAuthURL func(string)) linkedin.SetupInput {
 	_ = profileName
 	return linkedin.SetupInput{
+		ListenerURI: strings.TrimSpace(listenerURI),
 		RedirectURI: strings.TrimSpace(redirectURI),
 		Scopes:      scopes,
 		AuthFlow:    strings.TrimSpace(authFlow),

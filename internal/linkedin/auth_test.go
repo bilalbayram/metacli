@@ -315,6 +315,100 @@ func TestSetupPersistsTokensAndWhoAmIWithStandardFlow(t *testing.T) {
 	}
 }
 
+func TestSetupStandardFlowAllowsHostedHTTPSRedirectOverride(t *testing.T) {
+	profiles := newMemoryProfileStore()
+	secrets := newMemorySecretStore()
+
+	profileName := "prod"
+	err := profiles.Upsert(profileName, Profile{
+		Provider:        ProviderLinkedIn,
+		LinkedInVersion: "202602",
+		ClientID:        "client-123",
+		ClientSecretRef: "secret-ref",
+		AccessTokenRef:  "access-ref",
+		RefreshTokenRef: "refresh-ref",
+		Scopes:          []string{"r_ads"},
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if err := secrets.Set("secret-ref", "secret-123"); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	originalState := newState
+	originalListener := newListener
+	originalBrowser := openBrowser
+	defer func() {
+		newState = originalState
+		newListener = originalListener
+		openBrowser = originalBrowser
+	}()
+
+	openBrowser = func(string) error {
+		t.Fatal("unexpected browser open")
+		return nil
+	}
+	newState = func() (string, error) {
+		return "state-123", nil
+	}
+
+	listener := &fakeOAuthListener{redirectURI: "http://127.0.0.1:3456/oauth/callback", code: "auth-code"}
+	newListener = func(redirectURI string, state string) (oauthCodeListener, error) {
+		if redirectURI != "http://127.0.0.1:3456/oauth/callback" {
+			t.Fatalf("unexpected listener redirect uri: %s", redirectURI)
+		}
+		if state != "state-123" {
+			t.Fatalf("unexpected state: %s", state)
+		}
+		return listener, nil
+	}
+
+	var announcedURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/v2/accessToken":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			if got := r.PostForm.Get("redirect_uri"); got != "https://meta.example.com/li/oauth/callback" {
+				t.Fatalf("unexpected redirect_uri: %s", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-123","expires_in":3600,"refresh_token":"refresh-123","refresh_token_expires_in":7200,"scope":"r_ads"}`))
+		case "/v2/me":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"urn:li:person:abc","localizedFirstName":"Ada","localizedLastName":"Lovelace"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), server.URL, server.URL, profiles, secrets)
+	result, err := svc.Setup(context.Background(), profileName, SetupInput{
+		ListenerURI: "http://127.0.0.1:3456/oauth/callback",
+		RedirectURI: "https://meta.example.com/li/oauth/callback",
+		Scopes:      []string{"r_ads"},
+		AuthFlow:    string(AuthFlowStandard),
+		OnAuthURL: func(raw string) {
+			announcedURL = raw
+		},
+		OpenBrowser: false,
+		Timeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !strings.Contains(announcedURL, "redirect_uri=https%3A%2F%2Fmeta.example.com%2Fli%2Foauth%2Fcallback") {
+		t.Fatalf("unexpected authorization url: %s", announcedURL)
+	}
+	if result.RedirectURI != "https://meta.example.com/li/oauth/callback" {
+		t.Fatalf("unexpected result redirect uri: %s", result.RedirectURI)
+	}
+}
+
 func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
 	profiles := newMemoryProfileStore()
 	secrets := newMemorySecretStore()
@@ -406,6 +500,41 @@ func TestSetupNativePKCEUsesCodeVerifierExchange(t *testing.T) {
 	}
 	if result.AuthFlow != string(AuthFlowNativePKCE) {
 		t.Fatalf("unexpected auth flow: %s", result.AuthFlow)
+	}
+}
+
+func TestSetupRejectsNonLoopbackHTTPRedirectForStandardFlow(t *testing.T) {
+	profiles := newMemoryProfileStore()
+	secrets := newMemorySecretStore()
+
+	err := profiles.Upsert("prod", Profile{
+		Provider:        ProviderLinkedIn,
+		LinkedInVersion: "202602",
+		ClientID:        "client-123",
+		ClientSecretRef: "secret-ref",
+		AccessTokenRef:  "access-ref",
+		RefreshTokenRef: "refresh-ref",
+		Scopes:          []string{"r_ads"},
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if err := secrets.Set("secret-ref", "secret-123"); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	svc := NewService(nil, DefaultAuthBaseURL, DefaultAPIBaseURL, profiles, secrets)
+	_, err = svc.Setup(context.Background(), "prod", SetupInput{
+		ListenerURI: "http://127.0.0.1:3456/oauth/callback",
+		RedirectURI: "http://meta.example.com/li/oauth/callback",
+		AuthFlow:    string(AuthFlowStandard),
+		Timeout:     time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected redirect uri validation error")
+	}
+	if !strings.Contains(err.Error(), "standard flow requires https or loopback http") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

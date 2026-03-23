@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	KeychainService = "meta-marketing-cli"
-	SecretToken     = "token"
-	SecretAppSecret = "app_secret"
+	KeychainService    = "meta-marketing-cli"
+	SecretToken        = "token"
+	SecretAppSecret    = "app_secret"
+	SecretClientSecret = "client_secret"
+	SecretRefreshToken = "refresh_token"
 )
 
 type SecretStore interface {
@@ -59,7 +61,7 @@ func SecretRef(profile string, kind string) (string, error) {
 	}
 
 	switch kind {
-	case SecretToken, SecretAppSecret:
+	case SecretToken, SecretAppSecret, SecretClientSecret, SecretRefreshToken:
 	default:
 		return "", fmt.Errorf("unsupported secret kind %q", kind)
 	}
@@ -84,7 +86,7 @@ func ParseSecretRef(ref string) (string, string, error) {
 	if profile == "" || kind == "" {
 		return "", "", fmt.Errorf("invalid secret ref %q: empty profile or kind", ref)
 	}
-	if kind != SecretToken && kind != SecretAppSecret {
+	if kind != SecretToken && kind != SecretAppSecret && kind != SecretClientSecret && kind != SecretRefreshToken {
 		return "", "", fmt.Errorf("invalid secret ref %q: unknown kind %q", ref, kind)
 	}
 	return profile, kind, nil

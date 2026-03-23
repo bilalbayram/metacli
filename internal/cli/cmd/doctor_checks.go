@@ -161,15 +161,29 @@ func runDoctorChecks(cmd *cobra.Command, runtime Runtime, deps *doctorDeps) erro
 	for _, name := range profiles {
 		profile := cfg.Profiles[name]
 		tokenErr := checkSecretAccess(secretStore, profile.TokenRef)
-		appSecretErr := checkSecretAccess(secretStore, profile.AppSecretRef)
-
-		if tokenErr != nil || appSecretErr != nil {
-			msg := "secret store access failed:"
-			if tokenErr != nil {
-				msg += fmt.Sprintf(" token_ref: %v", tokenErr)
+		provider := config.ResolveProvider(profile.Provider)
+		secretErrors := make([]string, 0, 3)
+		if tokenErr != nil {
+			secretErrors = append(secretErrors, fmt.Sprintf("token_ref: %v", tokenErr))
+		}
+		switch provider {
+		case config.ProviderMeta:
+			if err := checkSecretAccess(secretStore, profile.AppSecretRef); err != nil {
+				secretErrors = append(secretErrors, fmt.Sprintf("app_secret_ref: %v", err))
 			}
-			if appSecretErr != nil {
-				msg += fmt.Sprintf(" app_secret_ref: %v", appSecretErr)
+		case config.ProviderLinkedIn:
+			if err := checkSecretAccess(secretStore, profile.ClientSecretRef); err != nil {
+				secretErrors = append(secretErrors, fmt.Sprintf("client_secret_ref: %v", err))
+			}
+			if err := checkSecretAccess(secretStore, profile.RefreshTokenRef); err != nil {
+				secretErrors = append(secretErrors, fmt.Sprintf("refresh_token_ref: %v", err))
+			}
+		}
+
+		if len(secretErrors) > 0 {
+			msg := "secret store access failed:"
+			for _, detail := range secretErrors {
+				msg += " " + detail
 			}
 			checks = append(checks, doctorCheck{
 				Name:    "secret_store",
@@ -191,6 +205,18 @@ func runDoctorChecks(cmd *cobra.Command, runtime Runtime, deps *doctorDeps) erro
 	svc := auth.NewService(configPath, secretStore, httpClient, graphBaseURL)
 	ctx := context.Background()
 	for _, name := range profiles {
+		profile := cfg.Profiles[name]
+		if config.ResolveProvider(profile.Provider) == config.ProviderLinkedIn {
+			status, message := doctorLinkedInTokenStatus(profile)
+			checks = append(checks, doctorCheck{
+				Name:    "token_validity",
+				Status:  status,
+				Message: message,
+				Profile: name,
+			})
+			continue
+		}
+
 		_, err := svc.ValidateProfile(ctx, name)
 		if err != nil {
 			checks = append(checks, doctorCheck{
@@ -199,14 +225,14 @@ func runDoctorChecks(cmd *cobra.Command, runtime Runtime, deps *doctorDeps) erro
 				Message: fmt.Sprintf("token validation failed: %v", err),
 				Profile: name,
 			})
-		} else {
-			checks = append(checks, doctorCheck{
-				Name:    "token_validity",
-				Status:  checkPass,
-				Message: "token valid",
-				Profile: name,
-			})
+			continue
 		}
+		checks = append(checks, doctorCheck{
+			Name:    "token_validity",
+			Status:  checkPass,
+			Message: "token valid",
+			Profile: name,
+		})
 	}
 
 	return writeSuccess(cmd, runtime, commandName, buildResult(checks), nil, nil)
@@ -233,6 +259,22 @@ func checkSecretAccess(store auth.SecretStore, ref string) error {
 	}
 	_, err := store.Get(ref)
 	return err
+}
+
+func doctorLinkedInTokenStatus(profile config.Profile) (checkStatus, string) {
+	expiresAt, err := time.Parse(time.RFC3339, profile.ExpiresAt)
+	if err != nil {
+		return checkFail, fmt.Sprintf("linkedin token expiry is invalid: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if !expiresAt.After(now) {
+		return checkFail, fmt.Sprintf("linkedin access token expired at %s", profile.ExpiresAt)
+	}
+	if expiresAt.Before(now.Add(24 * time.Hour)) {
+		return checkWarn, fmt.Sprintf("linkedin access token expires soon at %s", profile.ExpiresAt)
+	}
+	return checkPass, "linkedin token window looks healthy"
 }
 
 func buildResult(checks []doctorCheck) doctorCheckResult {

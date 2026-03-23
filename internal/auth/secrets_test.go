@@ -44,6 +44,24 @@ func TestSecretRefDeterministic(t *testing.T) {
 	}
 }
 
+func TestSecretRefSupportsLinkedInSecretKinds(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []string{SecretClientSecret, SecretRefreshToken} {
+		ref, err := SecretRef("li-prod", kind)
+		if err != nil {
+			t.Fatalf("unexpected error for %s: %v", kind, err)
+		}
+		_, parsedKind, err := ParseSecretRef(ref)
+		if err != nil {
+			t.Fatalf("parse ref %s: %v", ref, err)
+		}
+		if parsedKind != kind {
+			t.Fatalf("unexpected kind: got=%s want=%s", parsedKind, kind)
+		}
+	}
+}
+
 func TestKeychainStoreRoundTrip(t *testing.T) {
 	t.Parallel()
 

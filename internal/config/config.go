@@ -8,28 +8,37 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	SchemaVersion       = 2
-	DefaultGraphVersion = "v25.0"
-	DefaultDomain       = "marketing"
+	SchemaVersion          = 2
+	ProviderMeta           = "meta"
+	ProviderLinkedIn       = "linkedin"
+	DefaultGraphVersion    = "v25.0"
+	DefaultLinkedInVersion = "202601"
+	DefaultDomain          = "marketing"
 )
 
 type Profile struct {
+	Provider        string   `yaml:"provider,omitempty"`
 	Domain          string   `yaml:"domain"`
-	GraphVersion    string   `yaml:"graph_version"`
-	TokenType       string   `yaml:"token_type"`
+	GraphVersion    string   `yaml:"graph_version,omitempty"`
+	LinkedInVersion string   `yaml:"linkedin_version,omitempty"`
+	TokenType       string   `yaml:"token_type,omitempty"`
 	BusinessID      string   `yaml:"business_id,omitempty"`
 	AppID           string   `yaml:"app_id,omitempty"`
+	ClientID        string   `yaml:"client_id,omitempty"`
 	PageID          string   `yaml:"page_id,omitempty"`
 	SourceProfile   string   `yaml:"source_profile,omitempty"`
 	TokenRef        string   `yaml:"token_ref"`
 	AppSecretRef    string   `yaml:"app_secret_ref,omitempty"`
-	AuthProvider    string   `yaml:"auth_provider"`
-	AuthMode        string   `yaml:"auth_mode"`
+	ClientSecretRef string   `yaml:"client_secret_ref,omitempty"`
+	RefreshTokenRef string   `yaml:"refresh_token_ref,omitempty"`
+	AuthProvider    string   `yaml:"auth_provider,omitempty"`
+	AuthMode        string   `yaml:"auth_mode,omitempty"`
 	Scopes          []string `yaml:"scopes"`
 	IssuedAt        string   `yaml:"issued_at"`
 	ExpiresAt       string   `yaml:"expires_at"`
@@ -195,10 +204,17 @@ func (c *Config) UpsertProfile(name string, profile Profile) error {
 }
 
 func applyProfileDefaults(profile Profile) Profile {
+	if profile.Provider == "" {
+		profile.Provider = ProviderMeta
+	}
 	if profile.Domain == "" {
 		profile.Domain = DefaultDomain
 	}
-	if profile.GraphVersion == "" {
+	if profile.Provider == ProviderLinkedIn {
+		if profile.LinkedInVersion == "" {
+			profile.LinkedInVersion = DefaultLinkedInVersion
+		}
+	} else if profile.GraphVersion == "" {
 		profile.GraphVersion = DefaultGraphVersion
 	}
 	return profile
@@ -208,44 +224,68 @@ func validateProfile(name string, profile Profile) error {
 	if name == "" {
 		return errors.New("profile name cannot be empty")
 	}
+	provider := ResolveProvider(profile.Provider)
+	if provider == "" {
+		return fmt.Errorf("profile %q provider must be one of [%s %s]", name, ProviderMeta, ProviderLinkedIn)
+	}
 	if profile.Domain == "" {
 		return fmt.Errorf("profile %q domain is required", name)
-	}
-	if profile.GraphVersion == "" {
-		return fmt.Errorf("profile %q graph_version is required", name)
-	}
-	if profile.TokenType == "" {
-		return fmt.Errorf("profile %q token_type is required", name)
-	}
-	switch profile.TokenType {
-	case "system_user", "user", "page", "app":
-	default:
-		return fmt.Errorf("profile %q token_type must be one of [system_user user page app]", name)
 	}
 	if profile.TokenRef == "" {
 		return fmt.Errorf("profile %q token_ref is required", name)
 	}
-	if profile.AppID == "" {
-		return fmt.Errorf("profile %q app_id is required", name)
-	}
-	if profile.AppSecretRef == "" {
-		return fmt.Errorf("profile %q app_secret_ref is required", name)
-	}
-	if profile.AuthProvider == "" {
-		return fmt.Errorf("profile %q auth_provider is required", name)
-	}
-	switch profile.AuthProvider {
-	case "facebook_login", "instagram_login", "system_user", "app":
-	default:
-		return fmt.Errorf("profile %q auth_provider must be one of [facebook_login instagram_login system_user app]", name)
-	}
-	if profile.AuthMode == "" {
-		return fmt.Errorf("profile %q auth_mode is required", name)
-	}
-	switch profile.AuthMode {
-	case "both", "facebook", "instagram":
-	default:
-		return fmt.Errorf("profile %q auth_mode must be one of [both facebook instagram]", name)
+
+	switch provider {
+	case ProviderMeta:
+		if profile.GraphVersion == "" {
+			return fmt.Errorf("profile %q graph_version is required", name)
+		}
+		if profile.TokenType == "" {
+			return fmt.Errorf("profile %q token_type is required", name)
+		}
+		switch profile.TokenType {
+		case "system_user", "user", "page", "app":
+		default:
+			return fmt.Errorf("profile %q token_type must be one of [system_user user page app]", name)
+		}
+		if profile.AppID == "" {
+			return fmt.Errorf("profile %q app_id is required", name)
+		}
+		if profile.AppSecretRef == "" {
+			return fmt.Errorf("profile %q app_secret_ref is required", name)
+		}
+		if profile.AuthProvider == "" {
+			return fmt.Errorf("profile %q auth_provider is required", name)
+		}
+		switch profile.AuthProvider {
+		case "facebook_login", "instagram_login", "system_user", "app":
+		default:
+			return fmt.Errorf("profile %q auth_provider must be one of [facebook_login instagram_login system_user app]", name)
+		}
+		if profile.AuthMode == "" {
+			return fmt.Errorf("profile %q auth_mode is required", name)
+		}
+		switch profile.AuthMode {
+		case "both", "facebook", "instagram":
+		default:
+			return fmt.Errorf("profile %q auth_mode must be one of [both facebook instagram]", name)
+		}
+	case ProviderLinkedIn:
+		if profile.LinkedInVersion == "" {
+			return fmt.Errorf("profile %q linkedin_version is required", name)
+		}
+		if len(profile.LinkedInVersion) != 6 || !isDigits(profile.LinkedInVersion) {
+			return fmt.Errorf("profile %q linkedin_version must use YYYYMM format", name)
+		}
+		if profile.ClientID == "" {
+			return fmt.Errorf("profile %q client_id is required", name)
+		}
+		if profile.ClientSecretRef == "" {
+			return fmt.Errorf("profile %q client_secret_ref is required", name)
+		}
+		if profile.RefreshTokenRef == "" {
+			return fmt.Errorf("profile %q refresh_token_ref is required", name)
+		}
 	}
 	if len(profile.Scopes) == 0 {
 		return fmt.Errorf("profile %q scopes must contain at least one scope", name)
@@ -270,4 +310,24 @@ func validateProfile(name string, profile Profile) error {
 		return fmt.Errorf("profile %q last_validated_at must be RFC3339: %w", name, err)
 	}
 	return nil
+}
+
+func ResolveProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", ProviderMeta:
+		return ProviderMeta
+	case ProviderLinkedIn:
+		return ProviderLinkedIn
+	default:
+		return ""
+	}
+}
+
+func isDigits(value string) bool {
+	for _, r := range value {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return value != ""
 }

@@ -21,11 +21,17 @@ type Envelope struct {
 	Command         string     `json:"command"`
 	Timestamp       string     `json:"timestamp"`
 	RequestID       string     `json:"request_id"`
+	Provider        *Provider  `json:"provider,omitempty"`
 	Success         bool       `json:"success"`
 	Data            any        `json:"data,omitempty"`
 	Paging          any        `json:"paging,omitempty"`
 	RateLimit       any        `json:"rate_limit,omitempty"`
 	Error           *ErrorInfo `json:"error,omitempty"`
+}
+
+type Provider struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
 }
 
 type Remediation struct {
@@ -48,6 +54,10 @@ type ErrorInfo struct {
 }
 
 func NewEnvelope(command string, success bool, data any, paging any, rateLimit any, errorInfo *ErrorInfo) (Envelope, error) {
+	return NewEnvelopeWithProvider(command, success, data, paging, rateLimit, errorInfo, nil)
+}
+
+func NewEnvelopeWithProvider(command string, success bool, data any, paging any, rateLimit any, errorInfo *ErrorInfo, provider *Provider) (Envelope, error) {
 	requestID, err := newRequestID()
 	if err != nil {
 		return Envelope{}, err
@@ -57,6 +67,7 @@ func NewEnvelope(command string, success bool, data any, paging any, rateLimit a
 		Command:         command,
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
 		RequestID:       requestID,
+		Provider:        provider,
 		Success:         success,
 		Data:            data,
 		Paging:          paging,

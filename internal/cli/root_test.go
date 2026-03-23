@@ -65,6 +65,12 @@ func TestSubcommandRequiredErrorsPrintHelp(t *testing.T) {
 		usagePrefix string
 	}{
 		{
+			name:        "li",
+			args:        []string{"li"},
+			errorString: "li requires a subcommand",
+			usagePrefix: "meta li",
+		},
+		{
 			name:        "ig",
 			args:        []string{"ig"},
 			errorString: "ig requires a subcommand",

@@ -134,7 +134,7 @@ func TestListAccountRolesUsesAccountsFinder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("account urn: %v", err)
 	}
-	if _, err := service.ListAccountRoles(context.Background(), accountURN, 0, ""); err != nil {
+	if _, err := service.ListAccountRoles(context.Background(), accountURN, 25, "50"); err != nil {
 		t.Fatalf("list account roles: %v", err)
 	}
 
@@ -148,11 +148,82 @@ func TestListAccountRolesUsesAccountsFinder(t *testing.T) {
 	if got := req.URL.Query().Get("accounts"); got != accountURN.String() {
 		t.Fatalf("unexpected accounts query %q", got)
 	}
+	if got := req.URL.Query().Get("count"); got != "25" {
+		t.Fatalf("unexpected count query %q", got)
+	}
+	if got := req.URL.Query().Get("start"); got != "50" {
+		t.Fatalf("unexpected start query %q", got)
+	}
 	if got := req.URL.RawQuery; !strings.Contains(got, "accounts=urn:li:sponsoredAccount:123") {
 		t.Fatalf("unexpected raw query %q", got)
 	}
 	if got := req.URL.Query().Get("account"); got != "" {
 		t.Fatalf("unexpected legacy account query %q", got)
+	}
+}
+
+func TestListAccountRolesFallsBackToAuthenticatedUserOnValidationError(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusBadRequest, `{"message":"Invalid query parameters passed to request","inputErrors":[{"description":"QUERY_PARAM_NOT_ALLOWED on field accounts"}]}`),
+			responseJSON(http.StatusOK, `{"elements":[{"account":"urn:li:sponsoredAccount:123","role":"VIEWER"},{"account":"urn:li:sponsoredAccount:456","role":"ACCOUNT_MANAGER"}],"paging":{"count":2,"start":0,"total":2}}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+	service := NewAdsService(client)
+
+	accountURN, err := SponsoredAccountURN("123")
+	if err != nil {
+		t.Fatalf("account urn: %v", err)
+	}
+	result, err := service.ListAccountRoles(context.Background(), accountURN, 25, "0")
+	if err != nil {
+		t.Fatalf("list account roles: %v", err)
+	}
+	if len(result.Elements) != 1 {
+		t.Fatalf("unexpected filtered elements %#v", result.Elements)
+	}
+	if got := result.Elements[0]["account"]; got != accountURN.String() {
+		t.Fatalf("unexpected filtered account %v", got)
+	}
+	if len(httpClient.requests) != 2 {
+		t.Fatalf("expected two requests, got %d", len(httpClient.requests))
+	}
+	if got := httpClient.requests[0].URL.Query().Get("q"); got != "accounts" {
+		t.Fatalf("unexpected primary finder %q", got)
+	}
+	if got := httpClient.requests[1].URL.Query().Get("q"); got != "authenticatedUser" {
+		t.Fatalf("unexpected fallback finder %q", got)
+	}
+	if got := httpClient.requests[1].URL.Query().Get("count"); got != "25" {
+		t.Fatalf("unexpected fallback count %q", got)
+	}
+	if got := httpClient.requests[1].URL.Query().Get("start"); got != "0" {
+		t.Fatalf("unexpected fallback start %q", got)
+	}
+}
+
+func TestListAccountRolesDoesNotFallbackOnPermissionError(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusForbidden, `{"message":"Access denied"}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+	service := NewAdsService(client)
+
+	accountURN, err := SponsoredAccountURN("123")
+	if err != nil {
+		t.Fatalf("account urn: %v", err)
+	}
+	_, err = service.ListAccountRoles(context.Background(), accountURN, 0, "")
+	if err == nil {
+		t.Fatal("expected permission error")
+	}
+	if len(httpClient.requests) != 1 {
+		t.Fatalf("expected single request, got %d", len(httpClient.requests))
 	}
 }
 

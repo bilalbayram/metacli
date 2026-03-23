@@ -25,6 +25,8 @@ const (
 	DefaultQueryTunnelThreshold = 1800
 	DefaultPageSizeParam        = "pageSize"
 	DefaultPageTokenParam       = "pageToken"
+	DefaultOffsetCountParam     = "count"
+	DefaultOffsetStartParam     = "start"
 )
 
 type Client struct {
@@ -71,10 +73,12 @@ type CursorPaginationResult struct {
 }
 
 type PaginationOptions struct {
-	FollowNext bool
-	Limit      int
-	PageSize   int
-	PageToken  string
+	FollowNext     bool
+	Limit          int
+	PageSize       int
+	PageToken      string
+	PageSizeParam  string
+	PageTokenParam string
 }
 
 type PagingInfo struct {
@@ -179,7 +183,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	if httpRes.StatusCode < 200 || httpRes.StatusCode >= 300 {
-		return nil, parseAPIError(httpRes.StatusCode, decoded, httpRes.Header, raw)
+		return nil, annotateRequestError(parseAPIError(httpRes.StatusCode, decoded, httpRes.Header, raw), httpReq)
 	}
 
 	return &Response{
@@ -236,8 +240,8 @@ func (c *Client) FetchCollection(ctx context.Context, req Request, opts Paginati
 	if current.Query == nil {
 		current.Query = map[string]string{}
 	}
-	pageSizeKey := normalizePaginationKey(DefaultPageSizeParam, DefaultPageSizeParam)
-	pageTokenKey := normalizePaginationKey(DefaultPageTokenParam, DefaultPageTokenParam)
+	pageSizeKey := normalizePaginationKey(opts.PageSizeParam, DefaultPageSizeParam)
+	pageTokenKey := normalizePaginationKey(opts.PageTokenParam, DefaultPageTokenParam)
 	if opts.PageSize > 0 {
 		current.Query[pageSizeKey] = strconv.Itoa(opts.PageSize)
 	}
@@ -512,6 +516,9 @@ func cursorTokenFromMap(payload map[string]any) string {
 				}
 			}
 		}
+		if token := offsetTokenFromPaging(child); token != "" {
+			return token
+		}
 	}
 	return ""
 }
@@ -526,7 +533,69 @@ func tokenFromNextHref(raw string) string {
 			return token
 		}
 	}
+	if token := strings.TrimSpace(parsed.Query().Get(DefaultOffsetStartParam)); token != "" {
+		return token
+	}
 	return ""
+}
+
+func offsetTokenFromPaging(payload map[string]any) string {
+	start, ok := numericField(payload, "start")
+	if !ok {
+		return ""
+	}
+	count, ok := numericField(payload, "count")
+	if !ok || count <= 0 {
+		return ""
+	}
+	total, ok := numericField(payload, "total")
+	if !ok || total <= 0 {
+		return ""
+	}
+	next := start + count
+	if next >= total {
+		return ""
+	}
+	return strconv.Itoa(next)
+}
+
+func numericField(payload map[string]any, key string) (int, bool) {
+	value, ok := payload[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(parsed), true
+	default:
+		return 0, false
+	}
+}
+
+func annotateRequestError(err error, req *http.Request) error {
+	apiErr, ok := err.(*Error)
+	if !ok || req == nil {
+		return err
+	}
+	if apiErr.Diagnostics == nil {
+		apiErr.Diagnostics = map[string]any{}
+	}
+	apiErr.Diagnostics["request"] = map[string]any{
+		"method":    req.Method,
+		"path":      req.URL.Path,
+		"raw_query": req.URL.RawQuery,
+	}
+	return apiErr
 }
 
 func decodeCollectionElements(body any) ([]map[string]any, error) {

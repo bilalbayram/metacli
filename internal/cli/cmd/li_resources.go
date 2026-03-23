@@ -82,7 +82,7 @@ func newLIAccountRolesCommand(runtime Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&version, "version", "", "LinkedIn version header (YYYYMM)")
 	cmd.Flags().StringVar(&accountURN, "account-urn", "", "Sponsored account URN or numeric account id")
 	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
-	cmd.Flags().StringVar(&pageToken, "page-token", "", "Cursor token")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "Pagination token (numeric offset for LinkedIn account roles)")
 	mustMarkFlagRequired(cmd, "account-urn")
 	return cmd
 }

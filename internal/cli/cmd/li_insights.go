@@ -99,7 +99,7 @@ func newLIInsightsRunLikeCommand(runtime Runtime, commandName string, short stri
 	cmd.Flags().StringVar(&until, "until", "", "Inclusive end date (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&timeGranularity, "time-granularity", string(linkedin.GranularityDaily), "ALL|DAILY|MONTHLY")
 	cmd.Flags().IntVar(&pageSize, "page-size", 0, "Page size")
-	cmd.Flags().StringVar(&pageToken, "page-token", "", "Cursor token")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "Pagination token (numeric offset for LinkedIn analytics)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Maximum rows to return")
 	cmd.Flags().BoolVar(&followNext, "follow-next", false, "Follow pagination")
 	mustMarkFlagRequired(cmd, "account-urns")
@@ -121,14 +121,30 @@ func newLIInsightsMetricsListCommand(runtime Runtime) *cobra.Command {
 				if strings.TrimSpace(pack) != "" && string(current) != strings.ToLower(strings.TrimSpace(pack)) {
 					continue
 				}
+				if linkedin.MetricPackUsesDefaultFields(current) {
+					defaultMetrics, err := linkedin.MetricPackDefaultMetrics(current)
+					if err != nil {
+						return writeCommandError(cmd, runtime, "meta li insights metrics list", err)
+					}
+					data = append(data, map[string]any{
+						"metric_pack":      current,
+						"metric":           "",
+						"mode":             "default",
+						"projected_fields": false,
+						"default_metrics":  linkedInMetricStrings(defaultMetrics),
+					})
+					continue
+				}
 				metrics, err := linkedin.MetricPackMetrics(current)
 				if err != nil {
 					return writeCommandError(cmd, runtime, "meta li insights metrics list", err)
 				}
 				for _, metric := range metrics {
 					data = append(data, map[string]any{
-						"metric_pack": current,
-						"metric":      metric,
+						"metric_pack":      current,
+						"metric":           metric,
+						"mode":             "fields",
+						"projected_fields": true,
 					})
 				}
 			}
@@ -215,4 +231,12 @@ func parseLinkedInDateRange(since string, until string) (*linkedin.DateRange, er
 		Start: linkedin.DateValue{Year: start.Year(), Month: int(start.Month()), Day: start.Day()},
 		End:   linkedin.DateValue{Year: end.Year(), Month: int(end.Month()), Day: end.Day()},
 	}, nil
+}
+
+func linkedInMetricStrings(metrics []linkedin.Metric) []string {
+	out := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		out = append(out, string(metric))
+	}
+	return out
 }

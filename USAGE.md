@@ -235,6 +235,10 @@ meta li campaign list \
 meta li creative list \
   --profile li-prod \
   --account-urn urn:li:sponsoredAccount:<ID>
+
+meta li account roles \
+  --profile li-prod \
+  --account-urn urn:li:sponsoredAccount:<ID>
 ```
 
 Reporting:
@@ -248,9 +252,24 @@ meta li insights run \
   --account-urns urn:li:sponsoredAccount:<ID> \
   --since 2026-03-01 \
   --until 2026-03-07 \
+  --level ACCOUNT \
+  --metric-pack basic
+
+meta li insights run \
+  --profile li-prod \
+  --account-urns urn:li:sponsoredAccount:<ID> \
+  --since 2026-03-01 \
+  --until 2026-03-07 \
   --level CAMPAIGN \
-  --metric-pack delivery
+  --metric-pack delivery \
+  --page-size 100 \
+  --page-token 0
 ```
+
+Notes:
+
+- `metric-pack basic` omits `fields` and relies on LinkedIn's default analytics response (`impressions` and `clicks`).
+- `li insights run` and `li account roles` treat `--page-token` as a numeric offset token, not a cursor.
 
 Core ad ops:
 

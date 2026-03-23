@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -73,6 +74,7 @@ const (
 	GranularityMonthly TimeGranularity = "MONTHLY"
 
 	QueryAnalytics   QueryKind = "analytics"
+	QueryStatistics  QueryKind = "statistics"
 	QueryDemographic QueryKind = "demographic"
 )
 
@@ -121,47 +123,71 @@ type ReportingService struct {
 	Client *Client
 }
 
-var metricPackDefinitions = map[MetricPack][]Metric{
+type metricPackDefinition struct {
+	Metrics          []Metric
+	DefaultMetrics   []Metric
+	UseDefaultFields bool
+}
+
+var metricPackDefinitions = map[MetricPack]metricPackDefinition{
 	PackBasic: {
-		MetricDateRange,
-		MetricPivotValues,
-		MetricImpressions,
-		MetricClicks,
+		DefaultMetrics:   []Metric{MetricImpressions, MetricClicks},
+		UseDefaultFields: true,
 	},
 	PackDelivery: {
-		MetricDateRange,
-		MetricPivotValues,
-		MetricImpressions,
-		MetricClicks,
-		MetricLandingPageClicks,
-		MetricCostInLocalCurrency,
+		Metrics: []Metric{
+			MetricDateRange,
+			MetricPivotValues,
+			MetricImpressions,
+			MetricLandingPageClicks,
+			MetricLikes,
+			MetricShares,
+			MetricCostInLocalCurrency,
+		},
 	},
 	PackLeadGen: {
-		MetricDateRange,
-		MetricPivotValues,
-		MetricImpressions,
-		MetricLandingPageClicks,
-		MetricCostInLocalCurrency,
-		MetricExternalWebsiteConv,
+		Metrics: []Metric{
+			MetricDateRange,
+			MetricPivotValues,
+			MetricImpressions,
+			MetricLandingPageClicks,
+			MetricCostInLocalCurrency,
+			MetricExternalWebsiteConv,
+		},
 	},
 	PackVideo: {
-		MetricDateRange,
-		MetricPivotValues,
-		MetricImpressions,
-		MetricClicks,
-		MetricLikes,
-		MetricShares,
+		Metrics: []Metric{
+			MetricDateRange,
+			MetricPivotValues,
+			MetricImpressions,
+			MetricLandingPageClicks,
+			MetricLikes,
+			MetricShares,
+		},
 	},
 	PackB2B: {
-		MetricDateRange,
-		MetricPivotValues,
-		MetricImpressions,
-		MetricClicks,
-		MetricLandingPageClicks,
-		MetricLikes,
-		MetricShares,
-		MetricCostInLocalCurrency,
+		Metrics: []Metric{
+			MetricDateRange,
+			MetricPivotValues,
+			MetricImpressions,
+			MetricLandingPageClicks,
+			MetricLikes,
+			MetricShares,
+			MetricCostInLocalCurrency,
+			MetricExternalWebsiteConv,
+		},
 	},
+}
+
+var supportedProjectedMetrics = map[Metric]struct{}{
+	MetricExternalWebsiteConv: {},
+	MetricDateRange:           {},
+	MetricImpressions:         {},
+	MetricLandingPageClicks:   {},
+	MetricLikes:               {},
+	MetricShares:              {},
+	MetricCostInLocalCurrency: {},
+	MetricPivotValues:         {},
 }
 
 var demographicPivots = map[Pivot]struct{}{
@@ -191,13 +217,30 @@ func NormalizeMetricPack(raw string) (MetricPack, error) {
 }
 
 func MetricPackMetrics(pack MetricPack) ([]Metric, error) {
-	metrics, ok := metricPackDefinitions[pack]
+	def, ok := metricPackDefinitions[pack]
 	if !ok {
 		return nil, fmt.Errorf("unsupported metric pack %q", pack)
 	}
+	metrics := def.Metrics
 	out := make([]Metric, len(metrics))
 	copy(out, metrics)
 	return out, nil
+}
+
+func MetricPackDefaultMetrics(pack MetricPack) ([]Metric, error) {
+	def, ok := metricPackDefinitions[pack]
+	if !ok {
+		return nil, fmt.Errorf("unsupported metric pack %q", pack)
+	}
+	metrics := def.DefaultMetrics
+	out := make([]Metric, len(metrics))
+	copy(out, metrics)
+	return out, nil
+}
+
+func MetricPackUsesDefaultFields(pack MetricPack) bool {
+	def, ok := metricPackDefinitions[pack]
+	return ok && def.UseDefaultFields
 }
 
 func NormalizeMetrics(metrics []string) ([]Metric, error) {
@@ -282,9 +325,16 @@ func ValidateReportingInput(input ReportingInput) error {
 	}
 	if pack != "" {
 		packMetrics, _ := MetricPackMetrics(pack)
-		if len(metrics) == 0 {
+		switch {
+		case len(metrics) == 0 && MetricPackUsesDefaultFields(pack):
+			metrics = nil
+		case len(metrics) == 0:
 			metrics = packMetrics
-		} else {
+		case MetricPackUsesDefaultFields(pack):
+			if err := validateProjectedMetrics(metrics); err != nil {
+				return err
+			}
+		default:
 			allowed := metricSet(packMetrics)
 			for _, metric := range metrics {
 				if _, ok := allowed[metric]; !ok {
@@ -292,6 +342,9 @@ func ValidateReportingInput(input ReportingInput) error {
 				}
 			}
 		}
+	}
+	if err := validateProjectedMetrics(metrics); err != nil {
+		return err
 	}
 
 	pivots, err := NormalizePivots(pivotsToStrings(input.Pivots))
@@ -302,8 +355,8 @@ func ValidateReportingInput(input ReportingInput) error {
 		pivots = append([]Pivot{Pivot(strings.ToUpper(strings.TrimSpace(string(input.Pivot))))}, pivots...)
 	}
 	pivots = dedupePivots(pivots)
-	if len(pivots) > 1 && input.QueryKind != QueryDemographic {
-		return errors.New("only one pivot is supported for analytics queries")
+	if len(pivots) > 3 {
+		return errors.New("at most three pivots are supported")
 	}
 	if input.Level == LevelCreative {
 		for _, pivot := range pivots {
@@ -381,7 +434,7 @@ func (s *ReportingService) Run(ctx context.Context, input ReportingInput) (*Repo
 	}
 
 	query := map[string]string{}
-	query["q"] = string(defaultQueryKind(input.QueryKind))
+	query["q"] = string(wireQueryKind(pivots))
 	query["dateRange"] = input.DateRange.Encode()
 	if input.TimeGranularity != "" {
 		query["timeGranularity"] = strings.ToUpper(string(input.TimeGranularity))
@@ -391,17 +444,21 @@ func (s *ReportingService) Run(ctx context.Context, input ReportingInput) (*Repo
 		query["fields"] = strings.Join(metricsToStrings(metrics), ",")
 	}
 	if len(pivots) > 0 {
-		if input.QueryKind == QueryDemographic {
+		if usesStatisticsQuery(pivots) {
 			query["pivots"] = listValue(pivotStrings(pivots)...)
 		} else {
 			query["pivot"] = string(pivots[0])
 		}
 	}
 	if input.PageSize > 0 {
-		query[DefaultPageSizeParam] = fmt.Sprintf("%d", input.PageSize)
+		query[DefaultOffsetCountParam] = fmt.Sprintf("%d", input.PageSize)
 	}
-	if strings.TrimSpace(input.PageToken) != "" {
-		query[DefaultPageTokenParam] = strings.TrimSpace(input.PageToken)
+	startToken := ""
+	if normalizedStartToken, err := normalizeOffsetToken(input.PageToken); err != nil {
+		return nil, err
+	} else if normalizedStartToken != "" {
+		startToken = normalizedStartToken
+		query[DefaultOffsetStartParam] = startToken
 	}
 
 	result := &ReportingResult{Rows: make([]map[string]any, 0)}
@@ -411,10 +468,12 @@ func (s *ReportingService) Run(ctx context.Context, input ReportingInput) (*Repo
 		Version: s.Client.Version,
 		Query:   query,
 	}, PaginationOptions{
-		FollowNext: input.FollowNext,
-		Limit:      input.Limit,
-		PageSize:   input.PageSize,
-		PageToken:  strings.TrimSpace(input.PageToken),
+		FollowNext:     input.FollowNext,
+		Limit:          input.Limit,
+		PageSize:       input.PageSize,
+		PageToken:      startToken,
+		PageSizeParam:  DefaultOffsetCountParam,
+		PageTokenParam: DefaultOffsetStartParam,
 	}, func(row map[string]any) error {
 		result.Rows = append(result.Rows, row)
 		return nil
@@ -437,20 +496,30 @@ func normalizeReportingMetrics(input ReportingInput) ([]Metric, error) {
 		if err != nil {
 			return nil, err
 		}
+		if MetricPackUsesDefaultFields(pack) {
+			return nil, nil
+		}
 		def, err := MetricPackMetrics(pack)
 		if err != nil {
 			return nil, err
 		}
 		metrics = def
 	}
+	if err := validateProjectedMetrics(metrics); err != nil {
+		return nil, err
+	}
 	return metrics, nil
 }
 
-func defaultQueryKind(kind QueryKind) QueryKind {
-	if strings.TrimSpace(string(kind)) == "" {
-		return QueryAnalytics
+func wireQueryKind(pivots []Pivot) QueryKind {
+	if usesStatisticsQuery(pivots) {
+		return QueryStatistics
 	}
-	return kind
+	return QueryAnalytics
+}
+
+func usesStatisticsQuery(pivots []Pivot) bool {
+	return len(pivots) > 1
 }
 
 func metricsToStrings(metrics []Metric) []string {
@@ -530,6 +599,31 @@ func metricSet(metrics []Metric) map[Metric]struct{} {
 		out[metric] = struct{}{}
 	}
 	return out
+}
+
+func validateProjectedMetrics(metrics []Metric) error {
+	for _, metric := range metrics {
+		if _, ok := supportedProjectedMetrics[metric]; ok {
+			continue
+		}
+		if metric == MetricClicks {
+			return errors.New("metric \"clicks\" is only available in LinkedIn's default analytics response; omit --metrics or use --metric-pack basic")
+		}
+		return fmt.Errorf("metric %q is not supported by LinkedIn's fields projection", metric)
+	}
+	return nil
+}
+
+func normalizeOffsetToken(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return "", fmt.Errorf("page token must be a non-negative integer offset")
+	}
+	return strconv.Itoa(value), nil
 }
 
 func validDate(value DateValue) bool {

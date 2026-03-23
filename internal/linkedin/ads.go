@@ -77,17 +77,41 @@ func (s *AdsService) ListAccountRoles(ctx context.Context, accountURN URN, pageS
 	if err != nil {
 		return nil, err
 	}
-	if pageSize > 0 {
-		return nil, errors.New("account role pagination is not supported by LinkedIn adAccountUsers?q=accounts")
+	values, err := offsetPagedValues(pageSize, pageToken)
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(pageToken) != "" {
-		return nil, errors.New("account role pagination is not supported by LinkedIn adAccountUsers?q=accounts")
+	startToken := values[DefaultOffsetStartParam]
+	values["q"] = "accounts"
+	values["accounts"] = normalized.String()
+	result, err := s.listCollectionWithOptions(ctx, pathAdAccountUsers, values, nil, PaginationOptions{
+		FollowNext:     true,
+		PageSize:       pageSize,
+		PageToken:      startToken,
+		PageSizeParam:  DefaultOffsetCountParam,
+		PageTokenParam: DefaultOffsetStartParam,
+	})
+	if err == nil || !shouldFallbackAccountRoles(err) {
+		return result, err
 	}
-	values := map[string]string{
-		"q":        "accounts",
-		"accounts": normalized.String(),
+	fallbackValues, err := offsetPagedValues(pageSize, pageToken)
+	if err != nil {
+		return nil, err
 	}
-	return s.listCollection(ctx, pathAdAccountUsers, values)
+	fallbackStartToken := fallbackValues[DefaultOffsetStartParam]
+	fallbackValues["q"] = "authenticatedUser"
+	result, err = s.listCollectionWithOptions(ctx, pathAdAccountUsers, fallbackValues, nil, PaginationOptions{
+		FollowNext:     true,
+		PageSize:       pageSize,
+		PageToken:      fallbackStartToken,
+		PageSizeParam:  DefaultOffsetCountParam,
+		PageTokenParam: DefaultOffsetStartParam,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result.Elements = filterAccountRoleElements(result.Elements, normalized)
+	return result, nil
 }
 
 func (s *AdsService) ListOrganizationRoles(ctx context.Context, organizationURN URN, pageSize int, pageToken string) (*CollectionResult, error) {
@@ -217,10 +241,20 @@ func (s *AdsService) ValidateTargeting(ctx context.Context, input TargetingValid
 }
 
 func (s *AdsService) listCollection(ctx context.Context, path string, query map[string]string) (*CollectionResult, error) {
-	return s.listCollectionWithHeaders(ctx, path, query, nil)
+	return s.listCollectionWithOptions(ctx, path, query, nil, PaginationOptions{
+		FollowNext: true,
+		PageSize:   queryPageSize(query),
+	})
 }
 
 func (s *AdsService) listCollectionWithHeaders(ctx context.Context, path string, query map[string]string, headers map[string]string) (*CollectionResult, error) {
+	return s.listCollectionWithOptions(ctx, path, query, headers, PaginationOptions{
+		FollowNext: true,
+		PageSize:   queryPageSize(query),
+	})
+}
+
+func (s *AdsService) listCollectionWithOptions(ctx context.Context, path string, query map[string]string, headers map[string]string, opts PaginationOptions) (*CollectionResult, error) {
 	if s == nil || s.Client == nil {
 		return nil, errors.New("ads client is required")
 	}
@@ -231,10 +265,7 @@ func (s *AdsService) listCollectionWithHeaders(ctx context.Context, path string,
 		Version: s.clientVersion(),
 		Query:   query,
 		Headers: headers,
-	}, PaginationOptions{
-		FollowNext: true,
-		PageSize:   queryPageSize(query),
-	}, func(element map[string]any) error {
+	}, opts, func(element map[string]any) error {
 		result.Elements = append(result.Elements, element)
 		return nil
 	})
@@ -329,4 +360,48 @@ func queryPageSize(values map[string]string) int {
 	}
 	size, _ := strconv.Atoi(strings.TrimSpace(values[DefaultPageSizeParam]))
 	return size
+}
+
+func offsetPagedValues(pageSize int, pageToken string) (map[string]string, error) {
+	values := map[string]string{}
+	if pageSize > 0 {
+		values[DefaultOffsetCountParam] = fmt.Sprintf("%d", pageSize)
+	}
+	startToken, err := normalizeOffsetToken(pageToken)
+	if err != nil {
+		return nil, err
+	}
+	if startToken != "" {
+		values[DefaultOffsetStartParam] = startToken
+	}
+	return values, nil
+}
+
+func shouldFallbackAccountRoles(err error) bool {
+	apiErr := &Error{}
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode != http.StatusBadRequest || apiErr.Category != ErrorCategoryValidation {
+		return false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(apiErr.Message))
+	if strings.Contains(normalized, "INVALID QUERY PARAMETERS") || strings.Contains(normalized, "QUERY PARAM") {
+		return true
+	}
+	diag := strings.ToUpper(string(mustMarshalLoose(apiErr.Diagnostics)))
+	return strings.Contains(diag, "QUERY_PARAM") || strings.Contains(diag, "FINDER")
+}
+
+func filterAccountRoleElements(elements []map[string]any, accountURN URN) []map[string]any {
+	filtered := make([]map[string]any, 0, len(elements))
+	want := strings.TrimSpace(accountURN.String())
+	for _, element := range elements {
+		account, _ := element["account"].(string)
+		if strings.TrimSpace(account) != want {
+			continue
+		}
+		filtered = append(filtered, element)
+	}
+	return filtered
 }

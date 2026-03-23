@@ -165,3 +165,44 @@ func TestFetchCollectionFollowsNextURL(t *testing.T) {
 		t.Fatalf("unexpected paging: %#v", paging)
 	}
 }
+
+func TestFetchCollectionUsesCustomOffsetPagingParams(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusOK, `{"elements":[{"id":"1"}],"paging":{"count":25,"start":50,"total":100}}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+
+	seen := make([]string, 0, 1)
+	paging, err := client.FetchCollection(context.Background(), Request{
+		Method: http.MethodGet,
+		Path:   "/rest/adAnalytics",
+		Query:  map[string]string{"q": "analytics"},
+	}, PaginationOptions{
+		PageSizeParam:  "count",
+		PageTokenParam: "start",
+		PageSize:       25,
+		PageToken:      "50",
+	}, func(row map[string]any) error {
+		seen = append(seen, row["id"].(string))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fetch collection: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "1" {
+		t.Fatalf("unexpected rows: %#v", seen)
+	}
+	req := httpClient.requests[0]
+	if got := req.URL.Query().Get("count"); got != "25" {
+		t.Fatalf("unexpected count query %q", got)
+	}
+	if got := req.URL.Query().Get("start"); got != "50" {
+		t.Fatalf("unexpected start query %q", got)
+	}
+	if paging == nil || paging.NextPageToken != "75" {
+		t.Fatalf("unexpected paging: %#v", paging)
+	}
+}

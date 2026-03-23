@@ -538,6 +538,69 @@ func TestSetupRejectsNonLoopbackHTTPRedirectForStandardFlow(t *testing.T) {
 	}
 }
 
+func TestSetupSkipsWhoAmIWithoutIdentityScopes(t *testing.T) {
+	profiles := newMemoryProfileStore()
+	secrets := newMemorySecretStore()
+
+	profileName := "prod"
+	err := profiles.Upsert(profileName, Profile{
+		Provider:        ProviderLinkedIn,
+		LinkedInVersion: "202603",
+		ClientID:        "client-123",
+		ClientSecretRef: "secret-ref",
+		AccessTokenRef:  "access-ref",
+		RefreshTokenRef: "refresh-ref",
+		Scopes:          []string{"r_ads", "rw_ads", "r_ads_reporting"},
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if err := secrets.Set("secret-ref", "secret-123"); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	originalState := newState
+	originalListener := newListener
+	defer func() {
+		newState = originalState
+		newListener = originalListener
+	}()
+	newState = func() (string, error) { return "state-123", nil }
+	newListener = func(redirectURI string, state string) (oauthCodeListener, error) {
+		return &fakeOAuthListener{redirectURI: redirectURI, state: state, code: "auth-code"}, nil
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/v2/accessToken":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-123","expires_in":3600,"refresh_token":"refresh-123","refresh_token_expires_in":7200,"scope":"r_ads rw_ads r_ads_reporting"}`))
+		case "/v2/me":
+			t.Fatal("whoami should be skipped for ads-only scopes")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), server.URL, server.URL, profiles, secrets)
+	result, err := svc.Setup(context.Background(), profileName, SetupInput{
+		RedirectURI: "http://127.0.0.1:3456/callback",
+		Scopes:      []string{"r_ads", "rw_ads", "r_ads_reporting"},
+		OpenBrowser: false,
+		Timeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if result.WhoAmI != nil {
+		t.Fatalf("expected whoami to be nil, got %#v", result.WhoAmI)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "r_liteprofile") {
+		t.Fatalf("unexpected warnings: %#v", result.Warnings)
+	}
+}
+
 func TestValidateRefreshesExpiredToken(t *testing.T) {
 	profiles := newMemoryProfileStore()
 	secrets := newMemorySecretStore()
@@ -634,6 +697,52 @@ func TestValidateRefreshesExpiredToken(t *testing.T) {
 	}
 	if updatedProfile.AccessTokenExpiresAt.Before(now) {
 		t.Fatal("expected access token expiry to be updated")
+	}
+}
+
+func TestValidateSuppressesWhoAmIPermissionError(t *testing.T) {
+	profiles := newMemoryProfileStore()
+	secrets := newMemorySecretStore()
+
+	err := profiles.Upsert("prod", Profile{
+		Provider:             ProviderLinkedIn,
+		LinkedInVersion:      "202603",
+		ClientID:             "client-123",
+		ClientSecretRef:      "secret-ref",
+		AccessTokenRef:       "access-ref",
+		RefreshTokenRef:      "refresh-ref",
+		Scopes:               []string{"r_ads", "r_liteprofile"},
+		AccessTokenExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if err := secrets.Set("access-ref", "access-123"); err != nil {
+		t.Fatalf("seed access token: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/me":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"Not enough permissions to access: me.GET.NO_VERSION"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), server.URL, server.URL, profiles, secrets)
+	result, err := svc.Validate(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if result.WhoAmI != nil {
+		t.Fatalf("expected whoami to be nil, got %#v", result.WhoAmI)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "me.GET.NO_VERSION") {
+		t.Fatalf("unexpected warnings: %#v", result.Warnings)
 	}
 }
 

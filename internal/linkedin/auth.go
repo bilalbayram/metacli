@@ -85,7 +85,8 @@ type SetupResult struct {
 	AuthURL     string        `json:"auth_url"`
 	RedirectURI string        `json:"redirect_uri"`
 	Token       TokenBundle   `json:"token"`
-	WhoAmI      *WhoAmIResult `json:"whoami,omitempty"`
+	WhoAmI      *WhoAmIResult `json:"whoami"`
+	Warnings    []string      `json:"warnings,omitempty"`
 	Refreshed   bool          `json:"refreshed"`
 }
 
@@ -94,6 +95,7 @@ type ValidateResult struct {
 	Refreshed   bool          `json:"refreshed"`
 	Token       TokenBundle   `json:"token"`
 	WhoAmI      *WhoAmIResult `json:"whoami"`
+	Warnings    []string      `json:"warnings,omitempty"`
 }
 
 type TokenBundle struct {
@@ -256,7 +258,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		return nil, err
 	}
 
-	whoami, err := s.WhoAmIWithToken(ctx, profile.LinkedInVersion, token.AccessToken)
+	whoami, warnings, err := s.resolveWhoAmIBestEffort(ctx, profile.LinkedInVersion, token.AccessToken, token.Scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +271,7 @@ func (s *Service) Setup(ctx context.Context, profileName string, input SetupInpu
 		RedirectURI: oauthRedirectURI,
 		Token:       token,
 		WhoAmI:      whoami,
+		Warnings:    warnings,
 		Refreshed:   false,
 	}, nil
 }
@@ -278,7 +281,7 @@ func (s *Service) Validate(ctx context.Context, profileName string) (*ValidateRe
 	if err != nil {
 		return nil, err
 	}
-	whoami, err := s.WhoAmIWithToken(ctx, profile.LinkedInVersion, token.AccessToken)
+	whoami, warnings, err := s.resolveWhoAmIBestEffort(ctx, profile.LinkedInVersion, token.AccessToken, token.Scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -287,6 +290,7 @@ func (s *Service) Validate(ctx context.Context, profileName string) (*ValidateRe
 		Refreshed:   refreshed,
 		Token:       token,
 		WhoAmI:      whoami,
+		Warnings:    warnings,
 	}, nil
 }
 
@@ -706,6 +710,16 @@ func normalizeScopes(scopes []string) []string {
 	return out
 }
 
+func hasLinkedInIdentityScope(scopes []string) bool {
+	for _, scope := range normalizeScopes(scopes) {
+		switch scope {
+		case "r_liteprofile", "r_basicprofile", "openid", "profile":
+			return true
+		}
+	}
+	return false
+}
+
 func needsRefresh(now time.Time, expiresAt time.Time) bool {
 	if expiresAt.IsZero() {
 		return false
@@ -734,6 +748,34 @@ func parseWhoAmI(payload map[string]any) *WhoAmIResult {
 		}
 	}
 	return result
+}
+
+func (s *Service) resolveWhoAmIBestEffort(ctx context.Context, version string, accessToken string, scopes []string) (*WhoAmIResult, []string, error) {
+	if !hasLinkedInIdentityScope(scopes) {
+		return nil, []string{"LinkedIn member profile lookup skipped; granted scopes do not include an identity scope such as r_liteprofile."}, nil
+	}
+
+	whoami, err := s.WhoAmIWithToken(ctx, version, accessToken)
+	if err == nil {
+		return whoami, nil, nil
+	}
+	if shouldSuppressWhoAmIError(err) {
+		return nil, []string{formatWhoAmIWarning(err)}, nil
+	}
+	return nil, nil, err
+}
+
+func shouldSuppressWhoAmIError(err error) bool {
+	var apiErr *Error
+	return errors.As(err, &apiErr) && apiErr.Category == ErrorCategoryPermission
+}
+
+func formatWhoAmIWarning(err error) string {
+	var apiErr *Error
+	if errors.As(err, &apiErr) && strings.TrimSpace(apiErr.Message) != "" {
+		return fmt.Sprintf("LinkedIn member profile lookup unavailable; continuing without whoami. Reason: %s", strings.TrimSpace(apiErr.Message))
+	}
+	return "LinkedIn member profile lookup unavailable; continuing without whoami."
 }
 
 func pickLinkedInName(payload map[string]any, kind string) string {

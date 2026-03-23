@@ -86,6 +86,11 @@ Recommended minimum check before using the CLI:
 - confirm the app has the approved scopes you plan to request, such as `r_ads`, `rw_ads`, `r_ads_reporting`, or `r_marketing_leadgen_automation`
 - confirm the authenticated LinkedIn member has the required ad account or organization roles, otherwise auth may succeed but resource commands will still fail closed
 
+Best-effort identity lookup:
+- `meta li auth setup` and `meta li auth validate` treat LinkedIn member lookup as optional
+- for Ads-only apps, `whoami` may be `null` with a warning if the app does not have an identity scope such as `r_liteprofile`
+- Ads commands such as `meta li account list` can still work even when member profile lookup is unavailable
+
 ```bash
 meta li auth setup \
   --profile li-prod \

@@ -108,6 +108,34 @@ func TestDoUsesQueryTunnelingForLongQueries(t *testing.T) {
 	}
 }
 
+func TestDoPreservesFieldCommasInRawQuery(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t:         t,
+		responses: []*http.Response{responseJSON(http.StatusOK, `{"ok":true}`)},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+
+	_, err := client.Do(context.Background(), Request{
+		Method: http.MethodGet,
+		Path:   "/rest/adAnalytics",
+		Query: map[string]string{
+			"q":      "analytics",
+			"fields": "dateRange,pivotValues,impressions,clicks",
+		},
+	})
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+
+	req := httpClient.requests[0]
+	if got := req.URL.RawQuery; !strings.Contains(got, "fields=dateRange,pivotValues,impressions,clicks") {
+		t.Fatalf("unexpected raw query %q", got)
+	}
+	if got := req.URL.RawQuery; strings.Contains(got, "fields=dateRange%2CpivotValues%2Cimpressions%2Cclicks") {
+		t.Fatalf("unexpected escaped fields query %q", got)
+	}
+}
+
 func TestFetchCollectionFollowsNextURL(t *testing.T) {
 	httpClient := &recordingHTTPClient{
 		t: t,

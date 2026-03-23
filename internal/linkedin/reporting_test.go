@@ -95,8 +95,14 @@ func TestReportingServiceBuildsAnalyticsQuery(t *testing.T) {
 	if got := query.Get("pivot"); got != string(PivotCampaign) {
 		t.Fatalf("unexpected pivot query %q", got)
 	}
-	if got := query.Get("fields"); !strings.Contains(got, "impressions") {
+	if got := query.Get("fields"); got != "dateRange,pivotValues,impressions,clicks" {
 		t.Fatalf("unexpected fields query %q", got)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "fields=dateRange,pivotValues,impressions,clicks") {
+		t.Fatalf("unexpected raw query %q", got)
+	}
+	if got := req.URL.RawQuery; strings.Contains(got, "fields=dateRange%2CpivotValues%2Cimpressions%2Cclicks") {
+		t.Fatalf("fields projection should not escape commas: %q", got)
 	}
 	if got := query.Get("dateRange"); !strings.Contains(got, "start:(year:2026,month:3,day:1)") {
 		t.Fatalf("unexpected dateRange query %q", got)

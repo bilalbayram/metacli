@@ -11,6 +11,7 @@ import (
 
 const (
 	pathAdAccounts                 = "/rest/adAccounts"
+	pathAdAccountUsers             = "/rest/adAccountUsers"
 	pathOrganizations              = "/rest/organizations"
 	pathOrganizationAuthorizations = "/rest/organizationAuthorizations"
 	pathCampaignGroups             = "/rest/adCampaignGroups"
@@ -19,6 +20,28 @@ const (
 	pathLeadForms                  = "/rest/leadForms"
 	pathLeads                      = "/rest/leadFormResponses"
 	pathTargetingFacets            = "/rest/adTargetingFacets"
+)
+
+var (
+	defaultCampaignGroupStatuses = []string{
+		"ACTIVE",
+		"ARCHIVED",
+		"CANCELED",
+		"DRAFT",
+		"PAUSED",
+		"PENDING_DELETION",
+		"REMOVED",
+	}
+	defaultCampaignStatuses = []string{
+		"ACTIVE",
+		"ARCHIVED",
+		"CANCELED",
+		"COMPLETED",
+		"DRAFT",
+		"PAUSED",
+		"PENDING_DELETION",
+		"REMOVED",
+	}
 )
 
 type AdsService struct {
@@ -50,20 +73,21 @@ func (s *AdsService) ListOrganizations(ctx context.Context, search string, pageS
 }
 
 func (s *AdsService) ListAccountRoles(ctx context.Context, accountURN URN, pageSize int, pageToken string) (*CollectionResult, error) {
-	if _, err := NormalizeSponsoredAccountURN(accountURN.String()); err != nil {
+	normalized, err := NormalizeSponsoredAccountURN(accountURN.String())
+	if err != nil {
 		return nil, err
 	}
-	values := map[string]string{
-		"q":       "search",
-		"account": accountURN.String(),
-	}
 	if pageSize > 0 {
-		values[DefaultPageSizeParam] = fmt.Sprintf("%d", pageSize)
+		return nil, errors.New("account role pagination is not supported by LinkedIn adAccountUsers?q=accounts")
 	}
 	if strings.TrimSpace(pageToken) != "" {
-		values[DefaultPageTokenParam] = pageToken
+		return nil, errors.New("account role pagination is not supported by LinkedIn adAccountUsers?q=accounts")
 	}
-	return s.listCollection(ctx, pathOrganizationAuthorizations, values)
+	values := map[string]string{
+		"q":        "accounts",
+		"accounts": normalized.String(),
+	}
+	return s.listCollection(ctx, pathAdAccountUsers, values)
 }
 
 func (s *AdsService) ListOrganizationRoles(ctx context.Context, organizationURN URN, pageSize int, pageToken string) (*CollectionResult, error) {
@@ -84,30 +108,31 @@ func (s *AdsService) ListOrganizationRoles(ctx context.Context, organizationURN 
 }
 
 func (s *AdsService) ListCampaignGroups(ctx context.Context, accountURN URN, search string, pageSize int, pageToken string) (*CollectionResult, error) {
-	if _, err := NormalizeSponsoredAccountURN(accountURN.String()); err != nil {
+	resourcePath, err := accountResourcePath(accountURN, "adCampaignGroups")
+	if err != nil {
 		return nil, err
 	}
-	values := valuesWithSearch(search, pageSize, pageToken)
-	values["account"] = accountURN.String()
-	return s.listCollection(ctx, pathCampaignGroups, values)
+	return s.listCollection(ctx, resourcePath, valuesWithCampaignSearch(search, pageSize, pageToken, defaultCampaignGroupStatuses))
 }
 
 func (s *AdsService) ListCampaigns(ctx context.Context, accountURN URN, search string, pageSize int, pageToken string) (*CollectionResult, error) {
-	if _, err := NormalizeSponsoredAccountURN(accountURN.String()); err != nil {
+	resourcePath, err := accountResourcePath(accountURN, "adCampaigns")
+	if err != nil {
 		return nil, err
 	}
-	values := valuesWithSearch(search, pageSize, pageToken)
-	values["account"] = accountURN.String()
-	return s.listCollection(ctx, pathCampaigns, values)
+	return s.listCollection(ctx, resourcePath, valuesWithCampaignSearch(search, pageSize, pageToken, defaultCampaignStatuses))
 }
 
 func (s *AdsService) ListCreatives(ctx context.Context, accountURN URN, search string, pageSize int, pageToken string) (*CollectionResult, error) {
-	if _, err := NormalizeSponsoredAccountURN(accountURN.String()); err != nil {
+	resourcePath, err := accountResourcePath(accountURN, "creatives")
+	if err != nil {
 		return nil, err
 	}
-	values := valuesWithSearch(search, pageSize, pageToken)
-	values["account"] = accountURN.String()
-	return s.listCollection(ctx, pathCreatives, values)
+	values, err := creativeListValues(search, pageSize, pageToken)
+	if err != nil {
+		return nil, err
+	}
+	return s.listCollectionWithHeaders(ctx, resourcePath, values, map[string]string{"X-RestLi-Method": "FINDER"})
 }
 
 func (s *AdsService) ListLeadForms(ctx context.Context, accountURN URN, pageSize int, pageToken string) (*CollectionResult, error) {
@@ -192,6 +217,10 @@ func (s *AdsService) ValidateTargeting(ctx context.Context, input TargetingValid
 }
 
 func (s *AdsService) listCollection(ctx context.Context, path string, query map[string]string) (*CollectionResult, error) {
+	return s.listCollectionWithHeaders(ctx, path, query, nil)
+}
+
+func (s *AdsService) listCollectionWithHeaders(ctx context.Context, path string, query map[string]string, headers map[string]string) (*CollectionResult, error) {
 	if s == nil || s.Client == nil {
 		return nil, errors.New("ads client is required")
 	}
@@ -201,6 +230,7 @@ func (s *AdsService) listCollection(ctx context.Context, path string, query map[
 		Path:    path,
 		Version: s.clientVersion(),
 		Query:   query,
+		Headers: headers,
 	}, PaginationOptions{
 		FollowNext: true,
 		PageSize:   queryPageSize(query),
@@ -234,6 +264,63 @@ func valuesWithSearch(search string, pageSize int, pageToken string) map[string]
 		values[DefaultPageTokenParam] = pageToken
 	}
 	return values
+}
+
+func valuesWithCampaignSearch(search string, pageSize int, pageToken string, defaultStatuses []string) map[string]string {
+	values := pagedValues(pageSize, pageToken)
+	values["q"] = "search"
+	values["search"] = namedSearchExpression(search, defaultStatuses)
+	return values
+}
+
+func creativeListValues(search string, pageSize int, pageToken string) (map[string]string, error) {
+	values := pagedValues(pageSize, pageToken)
+	values["q"] = "criteria"
+	values["sortOrder"] = "ASCENDING"
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return values, nil
+	}
+	return nil, errors.New("creative search currently supports only LinkedIn criteria finder inputs via meta li api; omit --search for full account listing")
+}
+
+func pagedValues(pageSize int, pageToken string) map[string]string {
+	values := map[string]string{}
+	if pageSize > 0 {
+		values[DefaultPageSizeParam] = fmt.Sprintf("%d", pageSize)
+	}
+	if strings.TrimSpace(pageToken) != "" {
+		values[DefaultPageTokenParam] = strings.TrimSpace(pageToken)
+	}
+	return values
+}
+
+func namedSearchExpression(search string, defaultStatuses []string) string {
+	search = strings.TrimSpace(search)
+	switch {
+	case search == "":
+		return searchExpression("status", defaultStatuses...)
+	case strings.HasPrefix(search, "("):
+		return search
+	default:
+		return searchExpression("name", search)
+	}
+}
+
+func searchExpression(field string, values ...string) string {
+	return fmt.Sprintf("(%s:(values:%s))", strings.TrimSpace(field), listValue(values...))
+}
+
+func accountResourcePath(accountURN URN, resource string) (string, error) {
+	normalized, err := NormalizeSponsoredAccountURN(accountURN.String())
+	if err != nil {
+		return "", err
+	}
+	_, _, id, err := ParseURN(normalized.String())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s/%s", pathAdAccounts, id, strings.TrimPrefix(strings.TrimSpace(resource), "/")), nil
 }
 
 func queryPageSize(values map[string]string) int {

@@ -424,11 +424,11 @@ func buildQuery(values map[string]string) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	query := url.Values{}
+	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		query.Set(key, values[key])
+		parts = append(parts, encodeQueryPair(key, values[key]))
 	}
-	return query.Encode()
+	return strings.Join(parts, "&")
 }
 
 func encodeForm(values map[string]string) string {
@@ -440,12 +440,26 @@ func encodeForm(values map[string]string) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	form := url.Values{}
+	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		form.Set(key, values[key])
+		parts = append(parts, encodeQueryPair(key, values[key]))
 	}
-	return form.Encode()
+	return strings.Join(parts, "&")
 }
+
+func encodeQueryPair(key string, value string) string {
+	escapedKey := url.QueryEscape(key)
+	escapedValue := url.QueryEscape(value)
+	escapedValue = restliValueEscaper.Replace(escapedValue)
+	return escapedKey + "=" + escapedValue
+}
+
+var restliValueEscaper = strings.NewReplacer(
+	"%28", "(",
+	"%29", ")",
+	"%2C", ",",
+	"%3A", ":",
+)
 
 func normalizePaginationKey(value string, fallback string) string {
 	value = strings.TrimSpace(value)

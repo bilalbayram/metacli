@@ -30,24 +30,129 @@ func TestListCampaignsBuildsExpectedRequest(t *testing.T) {
 	}
 
 	req := httpClient.requests[0]
-	if got := req.URL.Path; got != "/rest/adCampaigns" {
+	if got := req.URL.Path; got != "/rest/adAccounts/123/adCampaigns" {
 		t.Fatalf("unexpected path %q", got)
 	}
 	query := req.URL.Query()
 	if got := query.Get("q"); got != "search" {
 		t.Fatalf("unexpected q %q", got)
 	}
-	if got := query.Get("account"); got != accountURN.String() {
-		t.Fatalf("unexpected account %q", got)
+	if got := query.Get("account"); got != "" {
+		t.Fatalf("unexpected legacy account query %q", got)
 	}
-	if got := query.Get("search"); got != "spring" {
+	if got := query.Get("search"); got != "(name:(values:List(spring)))" {
 		t.Fatalf("unexpected search %q", got)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "search=(name:(values:List(spring)))") {
+		t.Fatalf("unexpected raw query %q", got)
 	}
 	if got := query.Get("pageSize"); got != "25" {
 		t.Fatalf("unexpected pageSize %q", got)
 	}
 	if got := query.Get("pageToken"); got != "abc" {
 		t.Fatalf("unexpected pageToken %q", got)
+	}
+}
+
+func TestListCampaignGroupsBuildsAccountScopedSearchRequest(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusOK, `{"elements":[{"id":"1"}],"paging":{"count":1}}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+	service := NewAdsService(client)
+
+	accountURN, err := SponsoredAccountURN("123")
+	if err != nil {
+		t.Fatalf("account urn: %v", err)
+	}
+	if _, err := service.ListCampaignGroups(context.Background(), accountURN, "", 100, ""); err != nil {
+		t.Fatalf("list campaign groups: %v", err)
+	}
+
+	req := httpClient.requests[0]
+	if got := req.URL.Path; got != "/rest/adAccounts/123/adCampaignGroups" {
+		t.Fatalf("unexpected path %q", got)
+	}
+	if got := req.URL.Query().Get("search"); got != "(status:(values:List(ACTIVE,ARCHIVED,CANCELED,DRAFT,PAUSED,PENDING_DELETION,REMOVED)))" {
+		t.Fatalf("unexpected default search %q", got)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "search=(status:(values:List(ACTIVE,ARCHIVED,CANCELED,DRAFT,PAUSED,PENDING_DELETION,REMOVED)))") {
+		t.Fatalf("unexpected raw query %q", got)
+	}
+}
+
+func TestListCreativesUsesAccountFinderRequest(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusOK, `{"elements":[{"id":"1"}],"paging":{"count":1}}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+	service := NewAdsService(client)
+
+	accountURN, err := SponsoredAccountURN("123")
+	if err != nil {
+		t.Fatalf("account urn: %v", err)
+	}
+	if _, err := service.ListCreatives(context.Background(), accountURN, "", 25, "cursor-1"); err != nil {
+		t.Fatalf("list creatives: %v", err)
+	}
+
+	req := httpClient.requests[0]
+	if got := req.URL.Path; got != "/rest/adAccounts/123/creatives" {
+		t.Fatalf("unexpected path %q", got)
+	}
+	if got := req.URL.Query().Get("q"); got != "criteria" {
+		t.Fatalf("unexpected q %q", got)
+	}
+	if got := req.Header.Get("X-RestLi-Method"); got != "FINDER" {
+		t.Fatalf("unexpected finder header %q", got)
+	}
+	if got := req.URL.Query().Get("pageToken"); got != "cursor-1" {
+		t.Fatalf("unexpected page token %q", got)
+	}
+	if got := req.URL.Query().Get("account"); got != "" {
+		t.Fatalf("unexpected legacy account query %q", got)
+	}
+}
+
+func TestListAccountRolesUsesAccountsFinder(t *testing.T) {
+	httpClient := &recordingHTTPClient{
+		t: t,
+		responses: []*http.Response{
+			responseJSON(http.StatusOK, `{"elements":[{"role":"VIEWER"}],"paging":{"count":1}}`),
+		},
+	}
+	client := NewClient(httpClient, "https://api.linkedin.com", "202402", "token-123")
+	service := NewAdsService(client)
+
+	accountURN, err := SponsoredAccountURN("123")
+	if err != nil {
+		t.Fatalf("account urn: %v", err)
+	}
+	if _, err := service.ListAccountRoles(context.Background(), accountURN, 0, ""); err != nil {
+		t.Fatalf("list account roles: %v", err)
+	}
+
+	req := httpClient.requests[0]
+	if got := req.URL.Path; got != "/rest/adAccountUsers" {
+		t.Fatalf("unexpected path %q", got)
+	}
+	if got := req.URL.Query().Get("q"); got != "accounts" {
+		t.Fatalf("unexpected q %q", got)
+	}
+	if got := req.URL.Query().Get("accounts"); got != accountURN.String() {
+		t.Fatalf("unexpected accounts query %q", got)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "accounts=urn:li:sponsoredAccount:123") {
+		t.Fatalf("unexpected raw query %q", got)
+	}
+	if got := req.URL.Query().Get("account"); got != "" {
+		t.Fatalf("unexpected legacy account query %q", got)
 	}
 }
 

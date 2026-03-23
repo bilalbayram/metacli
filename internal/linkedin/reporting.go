@@ -19,6 +19,13 @@ type QueryKind string
 const (
 	MetricImpressions         Metric = "impressions"
 	MetricClicks              Metric = "clicks"
+	MetricDateRange           Metric = "dateRange"
+	MetricPivotValues         Metric = "pivotValues"
+	MetricLandingPageClicks   Metric = "landingPageClicks"
+	MetricLikes               Metric = "likes"
+	MetricShares              Metric = "shares"
+	MetricCostInLocalCurrency Metric = "costInLocalCurrency"
+	MetricExternalWebsiteConv Metric = "externalWebsiteConversions"
 	MetricSpend               Metric = "spend"
 	MetricCPC                 Metric = "cpc"
 	MetricCPM                 Metric = "cpm"
@@ -116,50 +123,44 @@ type ReportingService struct {
 
 var metricPackDefinitions = map[MetricPack][]Metric{
 	PackBasic: {
+		MetricDateRange,
+		MetricPivotValues,
 		MetricImpressions,
 		MetricClicks,
-		MetricSpend,
-		MetricCPC,
-		MetricCPM,
-		MetricCTR,
-		MetricReach,
-		MetricFrequency,
 	},
 	PackDelivery: {
+		MetricDateRange,
+		MetricPivotValues,
 		MetricImpressions,
 		MetricClicks,
-		MetricSpend,
-		MetricCPC,
-		MetricCPM,
-		MetricCTR,
-		MetricReach,
-		MetricFrequency,
+		MetricLandingPageClicks,
+		MetricCostInLocalCurrency,
 	},
 	PackLeadGen: {
+		MetricDateRange,
+		MetricPivotValues,
 		MetricImpressions,
-		MetricClicks,
-		MetricSpend,
-		MetricLeads,
-		MetricLeadFormOpens,
-		MetricCostPerLead,
+		MetricLandingPageClicks,
+		MetricCostInLocalCurrency,
+		MetricExternalWebsiteConv,
 	},
 	PackVideo: {
+		MetricDateRange,
+		MetricPivotValues,
 		MetricImpressions,
 		MetricClicks,
-		MetricSpend,
-		MetricVideoViews,
-		MetricVideoStarts,
-		MetricVideoCompletions,
-		MetricVideoCompletionRate,
+		MetricLikes,
+		MetricShares,
 	},
 	PackB2B: {
+		MetricDateRange,
+		MetricPivotValues,
 		MetricImpressions,
 		MetricClicks,
-		MetricSpend,
-		MetricCompanyClicks,
-		MetricMemberCompany,
-		MetricMemberSeniority,
-		MetricMemberJobFunction,
+		MetricLandingPageClicks,
+		MetricLikes,
+		MetricShares,
+		MetricCostInLocalCurrency,
 	},
 }
 
